@@ -1,1 +1,0 @@
-This dataset was generated from the [test cases](https://github.com/marcusrossel/lean-egg/tree/main/Lean/Egg/Tests) of the [lean-egg](https://github.com/marcusrossel/lean-egg) project. 
