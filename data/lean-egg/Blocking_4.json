@@ -7,50 +7,32 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "44.0": {
-      "op": "app",
-      "children": [
-        "43.0",
-        "11.0"
-      ],
-      "eclass": "44",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "88.0": {
-      "op": "Nat.zero",
-      "children": [],
-      "eclass": "88",
-      "cost": 1.0,
-      "subsumed": false
-    },
     "25.0": {
       "op": "app",
       "children": [
-        "22.0",
-        "24.0"
+        "24.0",
+        "11.0"
       ],
       "eclass": "25",
       "cost": 1.0,
       "subsumed": false
     },
-    "6.0": {
-      "op": "=",
-      "children": [
-        "1.0",
-        "3.0"
-      ],
-      "eclass": "6",
-      "cost": 1.0,
-      "subsumed": false
-    },
     "50.0": {
-      "op": "app",
+      "op": "fact",
       "children": [
-        "49.0",
         "3.0"
       ],
       "eclass": "50",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "31.0": {
+      "op": "app",
+      "children": [
+        "30.0",
+        "11.0"
+      ],
+      "eclass": "31",
       "cost": 1.0,
       "subsumed": false
     },
@@ -65,73 +47,52 @@
       "subsumed": false
     },
     "37.0": {
-      "op": "app",
-      "children": [
-        "36.0",
-        "11.0"
-      ],
+      "op": "Add.add",
+      "children": [],
       "eclass": "37",
       "cost": 1.0,
       "subsumed": false
     },
     "18.0": {
-      "op": "Nat.add",
-      "children": [],
+      "op": "app",
+      "children": [
+        "17.0",
+        "11.0"
+      ],
       "eclass": "18",
       "cost": 1.0,
       "subsumed": false
     },
     "43.0": {
-      "op": "app",
+      "op": "inst",
       "children": [
-        "42.0",
-        "11.0"
+        "42.0"
       ],
       "eclass": "43",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "87.0": {
+      "op": "lit",
+      "children": [
+        "8.0"
+      ],
+      "eclass": "87",
       "cost": 1.0,
       "subsumed": false
     },
     "24.0": {
       "op": "app",
       "children": [
-        "5.0",
-        "83.0"
-      ],
-      "eclass": "24",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "24.1": {
-      "op": "app",
-      "children": [
-        "25.0",
-        "30.0"
-      ],
-      "eclass": "24",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "24.2": {
-      "op": "app",
-      "children": [
-        "86.0",
-        "24.0"
-      ],
-      "eclass": "24",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "24.3": {
-      "op": "lit",
-      "children": [
-        "23.0"
+        "23.0",
+        "11.0"
       ],
       "eclass": "24",
       "cost": 1.0,
       "subsumed": false
     },
     "5.0": {
-      "op": "const",
+      "op": "fvar",
       "children": [
         "4.0"
       ],
@@ -139,19 +100,11 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "49.0": {
-      "op": "const",
-      "children": [
-        "48.0"
-      ],
-      "eclass": "49",
-      "cost": 1.0,
-      "subsumed": false
-    },
     "30.0": {
-      "op": "inst",
+      "op": "app",
       "children": [
-        "29.0"
+        "29.0",
+        "11.0"
       ],
       "eclass": "30",
       "cost": 1.0,
@@ -169,12 +122,19 @@
     "36.0": {
       "op": "const",
       "children": [
-        "35.0",
-        "8.0",
-        "8.0",
-        "8.0"
+        "35.0"
       ],
       "eclass": "36",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "17.0": {
+      "op": "const",
+      "children": [
+        "16.0",
+        "8.0"
+      ],
+      "eclass": "17",
       "cost": 1.0,
       "subsumed": false
     },
@@ -188,32 +148,27 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "86.0": {
-      "op": "app",
-      "children": [
-        "46.0",
-        "83.0"
-      ],
-      "eclass": "86",
-      "cost": 1.0,
-      "subsumed": false
-    },
     "23.0": {
-      "op": "1",
-      "children": [],
+      "op": "const",
+      "children": [
+        "22.0",
+        "8.0",
+        "8.0",
+        "8.0"
+      ],
       "eclass": "23",
       "cost": 1.0,
       "subsumed": false
     },
     "4.0": {
-      "op": "Nat.succ",
+      "op": "1551",
       "children": [],
       "eclass": "4",
       "cost": 1.0,
       "subsumed": false
     },
     "48.0": {
-      "op": "And",
+      "op": "Nat.add",
       "children": [],
       "eclass": "48",
       "cost": 1.0,
@@ -223,7 +178,7 @@
       "op": "app",
       "children": [
         "28.0",
-        "24.0"
+        "11.0"
       ],
       "eclass": "29",
       "cost": 1.0,
@@ -237,17 +192,15 @@
       "subsumed": false
     },
     "35.0": {
-      "op": "HAdd.hAdd",
+      "op": "Nat.succ",
       "children": [],
       "eclass": "35",
       "cost": 1.0,
       "subsumed": false
     },
     "16.0": {
-      "op": "inst",
-      "children": [
-        "15.0"
-      ],
+      "op": "OfNat",
+      "children": [],
       "eclass": "16",
       "cost": 1.0,
       "subsumed": false
@@ -256,8 +209,6 @@
       "op": "const",
       "children": [
         "40.0",
-        "8.0",
-        "8.0",
         "8.0"
       ],
       "eclass": "41",
@@ -265,16 +216,22 @@
       "subsumed": false
     },
     "22.0": {
-      "op": "app",
-      "children": [
-        "21.0",
-        "11.0"
-      ],
+      "op": "HAdd.hAdd",
+      "children": [],
       "eclass": "22",
       "cost": 1.0,
       "subsumed": false
     },
     "3.0": {
+      "op": "const",
+      "children": [
+        "0.0"
+      ],
+      "eclass": "3",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "3.1": {
       "op": "const",
       "children": [
         "2.0"
@@ -283,40 +240,30 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.1": {
+    "3.2": {
       "op": "app",
       "children": [
-        "50.0",
+        "53.0",
         "3.0"
       ],
       "eclass": "3",
       "cost": 1.0,
       "subsumed": false
     },
-    "3.2": {
+    "3.3": {
       "op": "∀",
       "children": [
-        "33.0",
-        "1.0"
-      ],
-      "eclass": "3",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "3.3": {
-      "op": "=",
-      "children": [
-        "1.0",
-        "1.0"
+        "5.0",
+        "3.0"
       ],
       "eclass": "3",
       "cost": 1.0,
       "subsumed": false
     },
     "3.4": {
-      "op": "=",
+      "op": "∀",
       "children": [
-        "3.0",
+        "46.0",
         "3.0"
       ],
       "eclass": "3",
@@ -326,8 +273,8 @@
     "3.5": {
       "op": "=",
       "children": [
-        "5.0",
-        "5.0"
+        "3.0",
+        "3.0"
       ],
       "eclass": "3",
       "cost": 1.0,
@@ -336,8 +283,8 @@
     "3.6": {
       "op": "=",
       "children": [
-        "6.0",
-        "6.0"
+        "5.0",
+        "5.0"
       ],
       "eclass": "3",
       "cost": 1.0,
@@ -396,8 +343,8 @@
     "3.12": {
       "op": "=",
       "children": [
-        "16.0",
-        "16.0"
+        "17.0",
+        "17.0"
       ],
       "eclass": "3",
       "cost": 1.0,
@@ -406,8 +353,8 @@
     "3.13": {
       "op": "=",
       "children": [
-        "21.0",
-        "21.0"
+        "18.0",
+        "18.0"
       ],
       "eclass": "3",
       "cost": 1.0,
@@ -416,14 +363,34 @@
     "3.14": {
       "op": "=",
       "children": [
-        "22.0",
-        "22.0"
+        "19.0",
+        "19.0"
       ],
       "eclass": "3",
       "cost": 1.0,
       "subsumed": false
     },
     "3.15": {
+      "op": "=",
+      "children": [
+        "20.0",
+        "20.0"
+      ],
+      "eclass": "3",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "3.16": {
+      "op": "=",
+      "children": [
+        "23.0",
+        "23.0"
+      ],
+      "eclass": "3",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "3.17": {
       "op": "=",
       "children": [
         "24.0",
@@ -433,7 +400,7 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.16": {
+    "3.18": {
       "op": "=",
       "children": [
         "25.0",
@@ -443,17 +410,17 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.17": {
+    "3.19": {
       "op": "=",
       "children": [
-        "27.0",
-        "27.0"
+        "26.0",
+        "26.0"
       ],
       "eclass": "3",
       "cost": 1.0,
       "subsumed": false
     },
-    "3.18": {
+    "3.20": {
       "op": "=",
       "children": [
         "28.0",
@@ -463,7 +430,7 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.19": {
+    "3.21": {
       "op": "=",
       "children": [
         "29.0",
@@ -473,7 +440,7 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.20": {
+    "3.22": {
       "op": "=",
       "children": [
         "30.0",
@@ -483,7 +450,27 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.21": {
+    "3.23": {
+      "op": "=",
+      "children": [
+        "31.0",
+        "31.0"
+      ],
+      "eclass": "3",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "3.24": {
+      "op": "=",
+      "children": [
+        "32.0",
+        "32.0"
+      ],
+      "eclass": "3",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "3.25": {
       "op": "=",
       "children": [
         "33.0",
@@ -493,7 +480,7 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.22": {
+    "3.26": {
       "op": "=",
       "children": [
         "36.0",
@@ -503,17 +490,7 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.23": {
-      "op": "=",
-      "children": [
-        "37.0",
-        "37.0"
-      ],
-      "eclass": "3",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "3.24": {
+    "3.27": {
       "op": "=",
       "children": [
         "38.0",
@@ -523,7 +500,7 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.25": {
+    "3.28": {
       "op": "=",
       "children": [
         "39.0",
@@ -533,7 +510,7 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.26": {
+    "3.29": {
       "op": "=",
       "children": [
         "41.0",
@@ -543,7 +520,7 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.27": {
+    "3.30": {
       "op": "=",
       "children": [
         "42.0",
@@ -553,7 +530,7 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.28": {
+    "3.31": {
       "op": "=",
       "children": [
         "43.0",
@@ -563,27 +540,7 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.29": {
-      "op": "=",
-      "children": [
-        "44.0",
-        "44.0"
-      ],
-      "eclass": "3",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "3.30": {
-      "op": "=",
-      "children": [
-        "45.0",
-        "45.0"
-      ],
-      "eclass": "3",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "3.31": {
+    "3.32": {
       "op": "=",
       "children": [
         "46.0",
@@ -593,21 +550,11 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "3.32": {
-      "op": "=",
-      "children": [
-        "49.0",
-        "49.0"
-      ],
-      "eclass": "3",
-      "cost": 1.0,
-      "subsumed": false
-    },
     "3.33": {
       "op": "=",
       "children": [
-        "50.0",
-        "50.0"
+        "52.0",
+        "52.0"
       ],
       "eclass": "3",
       "cost": 1.0,
@@ -616,37 +563,20 @@
     "3.34": {
       "op": "=",
       "children": [
-        "83.0",
-        "83.0"
+        "53.0",
+        "53.0"
       ],
       "eclass": "3",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "3.35": {
-      "op": "=",
-      "children": [
-        "86.0",
-        "86.0"
-      ],
-      "eclass": "3",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "47.0": {
-      "op": "fact",
-      "children": [
-        "3.0"
-      ],
-      "eclass": "47",
       "cost": 1.0,
       "subsumed": false
     },
     "28.0": {
-      "op": "app",
+      "op": "const",
       "children": [
         "27.0",
-        "11.0"
+        "8.0",
+        "8.0",
+        "8.0"
       ],
       "eclass": "28",
       "cost": 1.0,
@@ -662,30 +592,30 @@
       "cost": 1.0,
       "subsumed": false
     },
+    "53.0": {
+      "op": "app",
+      "children": [
+        "52.0",
+        "3.0"
+      ],
+      "eclass": "53",
+      "cost": 1.0,
+      "subsumed": false
+    },
     "15.0": {
       "op": "app",
       "children": [
-        "14.0",
-        "11.0"
+        "12.0",
+        "14.0"
       ],
       "eclass": "15",
       "cost": 1.0,
       "subsumed": false
     },
     "40.0": {
-      "op": "HAdd",
+      "op": "Add",
       "children": [],
       "eclass": "40",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "21.0": {
-      "op": "const",
-      "children": [
-        "20.0",
-        "8.0"
-      ],
-      "eclass": "21",
       "cost": 1.0,
       "subsumed": false
     },
@@ -697,28 +627,8 @@
       "subsumed": false
     },
     "46.0": {
-      "op": "const",
+      "op": "fvar",
       "children": [
-        "18.0"
-      ],
-      "eclass": "46",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "46.1": {
-      "op": "app",
-      "children": [
-        "12.0",
-        "16.0"
-      ],
-      "eclass": "46",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "46.2": {
-      "op": "app",
-      "children": [
-        "39.0",
         "45.0"
       ],
       "eclass": "46",
@@ -726,11 +636,8 @@
       "subsumed": false
     },
     "27.0": {
-      "op": "const",
-      "children": [
-        "26.0",
-        "8.0"
-      ],
+      "op": "HAdd",
+      "children": [],
       "eclass": "27",
       "cost": 1.0,
       "subsumed": false
@@ -742,20 +649,68 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "33.0": {
-      "op": "fvar",
+    "52.0": {
+      "op": "const",
       "children": [
+        "51.0"
+      ],
+      "eclass": "52",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "33.0": {
+      "op": "const",
+      "children": [
+        "48.0"
+      ],
+      "eclass": "33",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "33.1": {
+      "op": "app",
+      "children": [
+        "26.0",
         "32.0"
       ],
       "eclass": "33",
       "cost": 1.0,
       "subsumed": false
     },
-    "14.0": {
-      "op": "const",
+    "33.2": {
+      "op": "app",
       "children": [
-        "13.0",
-        "8.0"
+        "39.0",
+        "43.0"
+      ],
+      "eclass": "33",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "14.0": {
+      "op": "app",
+      "children": [
+        "15.0",
+        "20.0"
+      ],
+      "eclass": "14",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "14.1": {
+      "op": "app",
+      "children": [
+        "36.0",
+        "87.0"
+      ],
+      "eclass": "14",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "14.2": {
+      "op": "lit",
+      "children": [
+        "13.0"
       ],
       "eclass": "14",
       "cost": 1.0,
@@ -771,90 +726,85 @@
       "cost": 1.0,
       "subsumed": false
     },
-    "83.0": {
-      "op": "const",
-      "children": [
-        "88.0"
-      ],
-      "eclass": "83",
-      "cost": 1.0,
-      "subsumed": false
-    },
-    "83.1": {
-      "op": "lit",
-      "children": [
-        "8.0"
-      ],
-      "eclass": "83",
-      "cost": 1.0,
-      "subsumed": false
-    },
     "20.0": {
-      "op": "OfNat.ofNat",
-      "children": [],
+      "op": "inst",
+      "children": [
+        "19.0"
+      ],
       "eclass": "20",
       "cost": 1.0,
       "subsumed": false
     },
-    "1.0": {
-      "op": "const",
-      "children": [
-        "0.0"
-      ],
-      "eclass": "1",
-      "cost": 1.0,
-      "subsumed": false
-    },
     "45.0": {
-      "op": "inst",
-      "children": [
-        "44.0"
-      ],
+      "op": "1536",
+      "children": [],
       "eclass": "45",
       "cost": 1.0,
       "subsumed": false
     },
     "26.0": {
-      "op": "OfNat",
-      "children": [],
+      "op": "app",
+      "children": [
+        "25.0",
+        "11.0"
+      ],
       "eclass": "26",
       "cost": 1.0,
       "subsumed": false
     },
     "7.0": {
-      "op": "Add.add",
+      "op": "OfNat.ofNat",
       "children": [],
       "eclass": "7",
       "cost": 1.0,
       "subsumed": false
     },
-    "32.0": {
-      "op": "948",
+    "51.0": {
+      "op": "And",
       "children": [],
+      "eclass": "51",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "32.0": {
+      "op": "inst",
+      "children": [
+        "31.0"
+      ],
       "eclass": "32",
       "cost": 1.0,
       "subsumed": false
     },
     "13.0": {
-      "op": "Add",
+      "op": "1",
       "children": [],
       "eclass": "13",
       "cost": 1.0,
       "subsumed": false
     },
     "38.0": {
-      "op": "app",
+      "op": "const",
       "children": [
         "37.0",
-        "11.0"
+        "8.0"
       ],
       "eclass": "38",
+      "cost": 1.0,
+      "subsumed": false
+    },
+    "19.0": {
+      "op": "app",
+      "children": [
+        "18.0",
+        "14.0"
+      ],
+      "eclass": "19",
       "cost": 1.0,
       "subsumed": false
     }
   },
   "root_eclasses": [
-    "1",
+    "3",
     "3"
   ],
   "class_data": {}
