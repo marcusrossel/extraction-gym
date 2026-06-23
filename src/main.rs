@@ -31,7 +31,7 @@ struct ExtractorDetail {
 }
 
 fn extractors() -> IndexMap<&'static str, ExtractorDetail> {
-    let extractors: IndexMap<&'static str, ExtractorDetail> = [
+    [
         (
             "bottom-up",
             ExtractorDetail {
@@ -126,8 +126,57 @@ fn extractors() -> IndexMap<&'static str, ExtractorDetail> {
         ),
     ]
     .into_iter()
-    .collect();
-    extractors
+    .collect()
+}
+
+// A `Benchmark` collects all of the information necessary to run a single given extractor on a
+// single given e-graph (see `Benchmark::run`).
+struct Benchmark<'a> {
+    extractor_name:   String,
+    extractor_detail: &'a ExtractorDetail,
+    egraph:           &'a EGraph,
+    out_filename:     PathBuf,
+    filename:         String,
+}
+
+impl<'a> Benchmark<'a> {
+    fn run(&self) {
+        let egraph = self.egraph;
+        let roots = &egraph.root_eclasses;
+        let mut out_file = std::fs::File::create(&self.out_filename).unwrap();
+
+        let start_time = std::time::Instant::now();
+        let result = self.extractor_detail.extractor.extract(egraph, roots);
+        let us = start_time.elapsed().as_micros();
+
+        result.check(egraph);
+
+        let tree = result.tree_cost(egraph, roots);
+        let dag = result.dag_cost(egraph, roots);
+
+        let filename = &self.filename;
+        let extractor_name = &self.extractor_name;
+        let roots_str = roots.iter().map(|r| format!("\"{r}\"")).collect::<Vec<_>>().join(", ");
+        log::info!("{filename:40}\t{extractor_name:10}\t{tree:5}\t{dag:5}\t{us:5}");
+        writeln!(
+            out_file,
+            r#"{{
+            "name": "{filename}",
+            "roots": [{roots_str}],
+            "extractor": "{extractor_name}",
+            "tree": {tree},
+            "dag": {dag},
+            "micros": {us}
+            }}"#
+        )
+        .unwrap();
+    }
+
+    // Splits a single `Benchmark` with potentially multiple root e-classes into multiple benchmarks
+    // with a root single e-class each. A suffix (index) is added to filenames accordingly.
+    fn split_into_single_root(&self) -> Vec<Benchmark> {
+        todo!()
+    }
 }
 
 fn main() {
@@ -142,12 +191,15 @@ fn main() {
         .opt_value_from_str("--extractor")
         .unwrap()
         .unwrap_or_else(|| "bottom-up".into());
+
     if extractor_name == "print" {
         for name in extractors.keys() {
             println!("{}", name);
         }
         return;
     }
+
+    let single_root: bool = args.contains("--single-root");
 
     let out_filename: PathBuf = args
         .opt_value_from_str("--out")
@@ -161,38 +213,27 @@ fn main() {
         panic!("Unknown arguments: {:?}", rest);
     }
 
-    let mut out_file = std::fs::File::create(out_filename).unwrap();
-
-    let egraph = EGraph::from_json_file(&filename)
+    let egraph = &EGraph::from_json_file(&filename)
         .with_context(|| format!("Failed to parse {filename}"))
         .unwrap();
 
-    let ed = extractors
+    let extractor_detail = extractors
         .get(extractor_name.as_str())
         .with_context(|| format!("Unknown extractor: {extractor_name}"))
         .unwrap();
 
-    let start_time = std::time::Instant::now();
-    let result = ed.extractor.extract(&egraph, &egraph.root_eclasses);
-    let us = start_time.elapsed().as_micros();
+    let benchmark = Benchmark { extractor_name, extractor_detail, egraph, out_filename, filename };
 
-    result.check(&egraph);
-
-    let tree = result.tree_cost(&egraph, &egraph.root_eclasses);
-    let dag = result.dag_cost(&egraph, &egraph.root_eclasses);
-
-    log::info!("{filename:40}\t{extractor_name:10}\t{tree:5}\t{dag:5}\t{us:5}");
-    writeln!(
-        out_file,
-        r#"{{ 
-    "name": "{filename}",
-    "extractor": "{extractor_name}", 
-    "tree": {tree}, 
-    "dag": {dag}, 
-    "micros": {us}
-}}"#
-    )
-    .unwrap();
+    // If the `--single-root` flag is passed, run each benchmark with only a single root e-class.
+    // For benchmarks which would have had multiple root e-classes, we break it into multiple
+    // single-root benchmarks.
+    if single_root {
+        for benchmark in benchmark.split_into_single_root() {
+            benchmark.run();
+        }
+    } else {
+        benchmark.run();
+    }
 }
 
 #[cfg(test)]
