@@ -109,7 +109,7 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         for child in &egraph[node].children {
             let eqc = egraph.nid_to_cid(child);
             if unique_child_eqcs.insert(eqc) {
-                self.add_eqc_parent(eqc, child);
+                self.add_eqc_parent(eqc, node);
                 self.enqueue_eqc(eqc, merit.path_cost);
             }
         }
@@ -161,7 +161,7 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         self.eqc_min.contains_key(eqc)
     }
 
-    fn set_eqc_min_if_new(&mut self, eqc: &'a ClassId, node: &'a NodeId, cost: Cost) {
+    fn set_eqc_min(&mut self, eqc: &'a ClassId, node: &'a NodeId, cost: Cost) {
         self.eqc_min_cost.entry(eqc).or_insert(cost);
         self.eqc_min.entry(eqc.clone()).or_insert_with(|| node.clone());
     }
@@ -208,8 +208,10 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
     }
 
     fn assign_eqc(&mut self, eqc: &'a ClassId, node: &'a NodeId, merit: Merit) {
-        self.set_eqc_min_if_new(eqc, node, merit.cost);
-        self.update_eqc_parents(eqc);
+        if !self.eqc_has_min(eqc) {
+            self.set_eqc_min(eqc, node, merit.cost);
+            self.update_eqc_parents(eqc);
+        }
     }
 
     fn visit_node(&mut self, node: &'a NodeId, merit: Merit) {
