@@ -134,14 +134,14 @@ fn extractors() -> IndexMap<&'static str, ExtractorDetail> {
 struct Benchmark<'a> {
     extractor_name:   String,
     extractor_detail: &'a ExtractorDetail,
-    egraph:           &'a EGraph,
+    egraph:           EGraph,
     out_filename:     PathBuf,
     filename:         String,
 }
 
 impl<'a> Benchmark<'a> {
     fn run(&self) {
-        let egraph = self.egraph;
+        let egraph = &self.egraph;
         let roots = &egraph.root_eclasses;
         let mut out_file = std::fs::File::create(&self.out_filename).unwrap();
 
@@ -172,10 +172,26 @@ impl<'a> Benchmark<'a> {
         .unwrap();
     }
 
-    // Splits a single `Benchmark` with potentially multiple root e-classes into multiple benchmarks
-    // with a root single e-class each. A suffix (index) is added to filenames accordingly.
-    fn split_into_single_root(&self) -> Vec<Benchmark> {
-        todo!()
+    // Runs a `Benchmark` by splitting it into multiple benchmarks with a single root e-class and 
+    // running each in sequence. A suffix (index) is added to filenames accordingly.
+    fn run_as_single_root(mut self) {
+        if self.egraph.root_eclasses.len() <= 1 {
+            self.run();
+        } else {
+            let roots = std::mem::take(&mut self.egraph.root_eclasses);
+            let stem = self.out_filename.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            let ext = self.out_filename.extension()
+                .map(|e| format!(".{}", e.to_string_lossy()))
+                .unwrap_or_default();
+            let filename = std::mem::take(&mut self.filename);
+
+            for (idx, root) in roots.iter().enumerate() {
+                self.egraph.root_eclasses = vec![root.clone()];
+                self.out_filename = self.out_filename.with_file_name(format!("{stem}-{idx}{ext}"));
+                self.filename = format!("{filename}-{idx}");
+                self.run();
+            }
+        }
     }
 }
 
@@ -213,7 +229,7 @@ fn main() {
         panic!("Unknown arguments: {:?}", rest);
     }
 
-    let egraph = &EGraph::from_json_file(&filename)
+    let egraph = EGraph::from_json_file(&filename)
         .with_context(|| format!("Failed to parse {filename}"))
         .unwrap();
 
@@ -228,9 +244,7 @@ fn main() {
     // For benchmarks which would have had multiple root e-classes, we break it into multiple
     // single-root benchmarks.
     if single_root {
-        for benchmark in benchmark.split_into_single_root() {
-            benchmark.run();
-        }
+        benchmark.run_as_single_root();
     } else {
         benchmark.run();
     }
