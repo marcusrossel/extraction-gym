@@ -1,5 +1,6 @@
 FEATURES ?=
 FLAGS=--release --features=$(FEATURES)
+SINGLE_ROOT ?=
 
 EXTRACTORS=$(shell cargo run -q $(FLAGS) -- --extractor=print)
 
@@ -17,7 +18,7 @@ define run-extraction
 TARGETS += $(1:data/%=output/%)-$(2).json
 $(1:data/%=output/%)-$(2).json: $(1)
 	@mkdir -p $$(dir $$@)
-	$(PROGRAM) $$< --extractor=$(2) --out=$$@
+	$(PROGRAM) $$< --extractor=$(2) --out=$$@ $(if $(SINGLE_ROOT),--single-root)
 endef
 
 $(foreach ext,$(EXTRACTORS),\

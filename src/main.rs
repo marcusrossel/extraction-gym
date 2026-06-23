@@ -161,13 +161,13 @@ impl<'a> Benchmark<'a> {
         writeln!(
             out_file,
             r#"{{
-            "name": "{filename}",
-            "roots": [{roots_str}],
-            "extractor": "{extractor_name}",
-            "tree": {tree},
-            "dag": {dag},
-            "micros": {us}
-            }}"#
+  "name": "{filename}",
+  "roots": [{roots_str}],
+  "extractor": "{extractor_name}",
+  "tree": {tree},
+  "dag": {dag},
+  "micros": {us}
+}}"#
         )
         .unwrap();
     }
@@ -183,12 +183,10 @@ impl<'a> Benchmark<'a> {
             let ext = self.out_filename.extension()
                 .map(|e| format!(".{}", e.to_string_lossy()))
                 .unwrap_or_default();
-            let filename = std::mem::take(&mut self.filename);
 
             for (idx, root) in roots.iter().enumerate() {
                 self.egraph.root_eclasses = vec![root.clone()];
                 self.out_filename = self.out_filename.with_file_name(format!("{stem}-{idx}{ext}"));
-                self.filename = format!("{filename}-{idx}");
                 self.run();
             }
         }
