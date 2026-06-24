@@ -1,6 +1,6 @@
 FEATURES ?=
 FLAGS=--release --features=$(FEATURES)
-SINGLE_ROOT ?=
+SINGLE_ROOT ?= 
 
 EXTRACTORS=$(shell cargo run -q $(FLAGS) -- --extractor=print)
 
