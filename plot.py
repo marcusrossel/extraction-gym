@@ -10,9 +10,12 @@ def load_jsons(files):
     for file in files:
         try:
             with open(file) as f:
-                j = json.load(f)
-                j["json_path"] = file
-                js.append(j)
+                data = json.load(f)
+                for j in data["results"]:
+                    j["name"] = data["name"]
+                    j["extractor"] = data["extractor"]
+                    j["json_path"] = file
+                    js.append(j)
         except Exception as e:
             print(f"Error loading {file}")
             raise e

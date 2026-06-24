@@ -140,10 +140,9 @@ struct Benchmark<'a> {
 }
 
 impl<'a> Benchmark<'a> {
-    fn run(&self) {
+    fn execute(&self) -> String {
         let egraph = &self.egraph;
         let roots = &egraph.root_eclasses;
-        let mut out_file = std::fs::File::create(&self.out_filename).unwrap();
 
         let start_time = std::time::Instant::now();
         let result = self.extractor_detail.extractor.extract(egraph, roots);
@@ -158,37 +157,52 @@ impl<'a> Benchmark<'a> {
         let extractor_name = &self.extractor_name;
         let roots_str = roots.iter().map(|r| format!("\"{r}\"")).collect::<Vec<_>>().join(", ");
         log::info!("{filename:40}\t{extractor_name:10}\t{tree:5}\t{dag:5}\t{us:5}");
+
+        format!(r#"    {{
+      "roots": [{roots_str}],
+      "tree": {tree},
+      "dag": {dag},
+      "micros": {us}
+    }}"#)
+    }
+
+    fn write_results(&self, entries: &[String]) {
+        let mut out_file = std::fs::File::create(&self.out_filename).unwrap();
+        let entries_str = entries.join(",\n");
+        let name = &self.filename;
+        let extractor = &self.extractor_name;
         writeln!(
             out_file,
             r#"{{
-  "name": "{filename}",
-  "roots": [{roots_str}],
-  "extractor": "{extractor_name}",
-  "tree": {tree},
-  "dag": {dag},
-  "micros": {us}
+  "name": "{name}",
+  "extractor": "{extractor}",
+  "results": [
+{entries_str}
+  ]
 }}"#
-        )
-        .unwrap();
+        ).unwrap();
     }
 
-    // Runs a `Benchmark` by splitting it into multiple benchmarks with a single root e-class and 
-    // running each in sequence. A suffix (index) is added to filenames accordingly.
+    fn run(&self) {
+        let entry = self.execute();
+        self.write_results(&[entry]);
+    }
+
+    // Runs a `Benchmark` by splitting it into multiple single-root benchmarks and writing all
+    // results to a single output file.
     fn run_as_single_root(mut self) {
         if self.egraph.root_eclasses.len() <= 1 {
             self.run();
         } else {
             let roots = std::mem::take(&mut self.egraph.root_eclasses);
-            let stem = self.out_filename.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-            let ext = self.out_filename.extension()
-                .map(|e| format!(".{}", e.to_string_lossy()))
-                .unwrap_or_default();
+            let mut entries = Vec::new();
 
-            for (idx, root) in roots.iter().enumerate() {
+            for root in roots.iter() {
                 self.egraph.root_eclasses = vec![root.clone()];
-                self.out_filename = self.out_filename.with_file_name(format!("{stem}-{idx}{ext}"));
-                self.run();
+                entries.push(self.execute());
             }
+
+            self.write_results(&entries);
         }
     }
 }
