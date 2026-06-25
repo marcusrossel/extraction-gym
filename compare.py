@@ -5,7 +5,7 @@ Usage:
     python compare.py <extractor1> <extractor2> 
         [json_files...]
         [--min-enodes N] [--min-eclasses N]
-        [--sort benchmark|winner|ratio|e-nodes|e-classes|<extractor>]
+        [--sort benchmark|winner|speedup|e-nodes|e-classes|<extractor>]
 
 If no json_files are given, all files in output/**/*.json are used.
 """
@@ -85,6 +85,10 @@ def compare(entries, e1, e2, min_enodes=None, min_eclasses=None, sort_by="benchm
         key = (entry["name"], entry["roots"])
         index.setdefault(key, {})[entry["extractor"]] = entry["micros"]
 
+    roots_per_name = {}
+    for name, roots in index:
+        roots_per_name.setdefault(name, set()).add(roots)
+
     nodes_cache = {}
 
     rows = []
@@ -110,11 +114,16 @@ def compare(entries, e1, e2, min_enodes=None, min_eclasses=None, sort_by="benchm
             nodes_cache[name] = load_egraph(name)
         eclass_children, eclass_size = nodes_cache[name]
         total_enodes, total_eclasses, reach_enodes, reach_eclasses = egraph_stats(eclass_children, eclass_size, roots)
-        if min_enodes is not None and (total_enodes is None or total_enodes < min_enodes):
+        if min_enodes is not None and (reach_enodes is None or reach_enodes < min_enodes):
             continue
-        if min_eclasses is not None and (total_eclasses is None or total_eclasses < min_eclasses):
+        if min_eclasses is not None and (reach_eclasses is None or reach_eclasses < min_eclasses):
             continue
-        label = f"{name} {list(roots)}"
+        display_name = name.removeprefix("data/").removesuffix(".json")
+        if len(roots_per_name[name]) > 1:
+            roots_str = " [" + ", ".join(roots) + "]"
+        else:
+            roots_str = ""
+        label = f"{display_name}{roots_str}"
         rows.append((label, winner, ratio, t1, t2, total_enodes, total_eclasses, reach_enodes, reach_eclasses))
 
     if skipped:
@@ -127,7 +136,7 @@ def compare(entries, e1, e2, min_enodes=None, min_eclasses=None, sort_by="benchm
     sort_key = {
         "benchmark": lambda r: r[0],
         "winner":    lambda r: (r[1] is None, r[1] or ""),
-        "ratio":     lambda r: r[2],
+        "speedup":   lambda r: r[2],
         e1:          lambda r: r[3],
         e2:          lambda r: r[4],
         "e-nodes":   lambda r: (r[5] is None, r[5] or 0),
@@ -174,10 +183,10 @@ if __name__ == "__main__":
     parser.add_argument("--min-enodes", type=int, metavar="N", help="only include benchmarks with at least N e-nodes")
     parser.add_argument("--min-eclasses", type=int, metavar="N", help="only include benchmarks with at least N e-classes")
     parser.add_argument("--sort", metavar="COL", default="benchmark",
-                        help="sort by: benchmark, winner, ratio, e-nodes, e-classes, or an extractor name (default: benchmark)")
+                        help="sort by: benchmark, winner, speedup, e-nodes, e-classes, or an extractor name (default: benchmark)")
     args = parser.parse_args()
 
-    valid_sort = {"benchmark", "winner", "ratio", "e-nodes", "e-classes", args.extractor1, args.extractor2}
+    valid_sort = {"benchmark", "winner", "speedup", "e-nodes", "e-classes", args.extractor1, args.extractor2}
     if args.sort not in valid_sort:
         parser.error(f"--sort must be one of: {', '.join(sorted(valid_sort))}")
 
