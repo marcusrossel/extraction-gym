@@ -181,7 +181,7 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
     // Like `ExtractionResult::node_sum_cost`.
     fn get_min_node_cost(&self, node: &'a NodeId) -> Cost {
         let node = &self.egraph[node];
-        let total_child_cost : Cost = node.children.iter().map(|child| {
+        let total_child_cost: Cost = node.children.iter().map(|child| {
             let eqc = self.egraph.nid_to_cid(child);
             self.eqc_min_cost.get(eqc).copied().unwrap()
         }).sum();
@@ -197,7 +197,7 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
 
     fn update_eqc_parents(&mut self, eqc: &'a ClassId) {
         let Some(parents) = self.eqc_parents.get(eqc) else { return; };
-        let parents: Vec<&'a NodeId> = parents.clone();
+        let parents = parents.clone();
         for parent in parents {
             match self.node_delay.get(parent).copied() {
                 Some(1) => self.enqueue_branch_node_visit(parent),
@@ -238,8 +238,10 @@ pub struct NaiveAStarExtractor;
 
 impl Extractor for NaiveAStarExtractor {
     fn extract(&self, egraph: &EGraph, roots: &[ClassId]) -> ExtractionResult {
-        // TODO: We currently assume there to be only a single root class from which we extract.
-        let target = roots.last().unwrap();
+        // TODO: We currently assume there to be only a single root class from which we extract. Add
+        //       a field to the `ExtractorDetail` in `main.rs` where this can be declared.
+        assert_eq!(roots.len(), 1);
+        let target = &roots[0];
         let mut top_down = NaiveAStarTopDownExtractor::new(egraph);
         top_down.run(target);
         let mut bottom_up = NaiveAStarBottomUpExtractor::init(top_down);
