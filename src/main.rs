@@ -73,6 +73,14 @@ fn extractors() -> IndexMap<&'static str, ExtractorDetail> {
             },
         ),
         (
+            "a-star",
+            ExtractorDetail {
+                extractor: extract::a_star::AStarExtractor.boxed(),
+                optimal: Optimal::Tree,
+                use_for_bench: true,
+            },
+        ),
+        (
             "faster-greedy-dag",
             ExtractorDetail {
                 extractor: extract::faster_greedy_dag::FasterGreedyDagExtractor.boxed(),
