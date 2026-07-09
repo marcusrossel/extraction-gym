@@ -4,13 +4,13 @@ use super::*;
 
 #[derive(PartialEq, Eq)]
 struct Merit {
-    cost: Cost,
-    path_cost: Cost
+    top_down_cost: Cost,
+    bottom_up_cost: Cost
 }
 
 impl Merit {
     fn total(&self) -> Cost {
-        self.cost + self.path_cost
+        self.top_down_cost + self.bottom_up_cost
     }
 }
 
@@ -33,13 +33,13 @@ enum Action<'a> {
 }
 
 struct NaiveAStarTopDownExtractor<'a> {
-    egraph:           &'a EGraph,
-    eqc_parents:      FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
-    node_delay:       FxHashMap<&'a NodeId, usize>,
-    branch_path_cost: FxHashMap<&'a NodeId, Cost>,
-    enqueued_eqcs:    FxHashSet<&'a ClassId>,
-    queue:            PrioQueue<&'a NodeId, Merit>, 
-    leaves:           PrioQueue<Action<'a>, Merit>
+    egraph:        &'a EGraph,
+    eqc_parents:   FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
+    node_delay:    FxHashMap<&'a NodeId, usize>,
+    parent_cost:   FxHashMap<&'a NodeId, Cost>,
+    enqueued_eqcs: FxHashSet<&'a ClassId>,
+    queue:         PrioQueue<&'a NodeId, Cost>, 
+    leaves:        PrioQueue<Action<'a>, Merit>
 }
 
 impl<'a> NaiveAStarTopDownExtractor<'a> {
@@ -48,12 +48,12 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         let num_nodes = egraph.nodes.len();
         NaiveAStarTopDownExtractor {
             egraph,
-            eqc_parents:      FxHashMap::with_capacity_and_hasher(num_eqcs, Default::default()),
-            node_delay:       FxHashMap::with_capacity_and_hasher(num_nodes, Default::default()),
-            branch_path_cost: FxHashMap::with_capacity_and_hasher(num_nodes, Default::default()),
-            enqueued_eqcs:    FxHashSet::with_capacity_and_hasher(num_eqcs, Default::default()),
-            queue:            PrioQueue::new(),
-            leaves:           PrioQueue::new()
+            eqc_parents:   FxHashMap::with_capacity_and_hasher(num_eqcs, Default::default()),
+            node_delay:    FxHashMap::with_capacity_and_hasher(num_nodes, Default::default()),
+            parent_cost:   FxHashMap::with_capacity_and_hasher(num_nodes, Default::default()),
+            enqueued_eqcs: FxHashSet::with_capacity_and_hasher(num_eqcs, Default::default()),
+            queue:         PrioQueue::new(),
+            leaves:        PrioQueue::new()
         }
     }
 
@@ -73,87 +73,90 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         self.eqc_parents.entry(eqc).or_insert_with(Vec::new).push(node);
     }
 
-    fn dequeue(&mut self) -> Option<(&'a NodeId, Merit)> {
+    fn dequeue(&mut self) -> Option<(&'a NodeId, Cost)> {
         self.queue.pop()
     }
 
-    fn enqueue_node(&mut self, node: &'a NodeId, path_cost: Cost) {
-        let merit = Merit { cost: self.egraph[node].cost, path_cost };
-        self.queue.insert(node, merit);
+    fn enqueue_node(&mut self, node: &'a NodeId, parent_cost: Cost) {
+        self.set_parent_cost(node, parent_cost);
+        let td_cost = parent_cost + self.egraph[node].cost;
+        self.queue.insert(node, td_cost);
     }
 
-    fn enqueue_eqc(&mut self, eqc: &'a ClassId, eqc_path_cost: Cost) {
+    fn enqueue_eqc(&mut self, eqc: &'a ClassId, parent_cost: Cost) {
         if !self.is_enqueued_eqc(eqc) {
             let egraph = self.egraph;
             for node in &egraph.classes()[eqc].nodes {
-                self.enqueue_node(node, eqc_path_cost);
+                self.enqueue_node(node, parent_cost);
             }
             self.add_enqueued_eqc(eqc);
         }
     }
 
-    fn set_branch_path_cost(&mut self, node: &'a NodeId, path_cost: Cost) {
-        self.branch_path_cost.insert(node, path_cost);
+    fn set_parent_cost(&mut self, node: &'a NodeId, parent_cost: Cost) {
+        self.parent_cost.insert(node, parent_cost);
     }
 
-    fn add_leaf(&mut self, node: &'a NodeId, merit: Merit) {
+    fn add_leaf(&mut self, node: &'a NodeId) {
+        let top_down_cost = self.parent_cost[node];
+        let bottom_up_cost = self.egraph[node].cost;
+        let merit = Merit { top_down_cost, bottom_up_cost };
         self.leaves.insert(Action::Visit(node), merit);
     }
 
-    fn visit_branch_node(&mut self, node: &'a NodeId, merit: Merit) {
-        self.set_branch_path_cost(node, merit.path_cost);
-
+    fn visit_branch_node(&mut self, node: &'a NodeId) {
         let egraph = self.egraph;
+        let parent_cost = self.parent_cost[node];
         let mut unique_child_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
 
         for child in &egraph[node].children {
             let eqc = egraph.nid_to_cid(child);
             if unique_child_eqcs.insert(eqc) {
                 self.add_eqc_parent(eqc, node);
-                self.enqueue_eqc(eqc, merit.path_cost);
+                self.enqueue_eqc(eqc, parent_cost);
             }
         }
 
         self.set_node_delay(node, unique_child_eqcs.len());
     }
 
-    fn visit_node(&mut self, node: &'a NodeId, merit: Merit) {
+    fn visit_node(&mut self, node: &'a NodeId) {
         if self.egraph[node].children.is_empty() {
-            self.add_leaf(node, merit);
+            self.add_leaf(node);
         } else {
-            self.visit_branch_node(node, merit);
+            self.visit_branch_node(node);
         }
     }
 
     fn run(&mut self, target: &'a ClassId) {
         let zero = NotNan::new(0.0).unwrap();
         self.enqueue_eqc(target, zero);
-        while let Some((node, merit)) = self.dequeue() {
-            self.visit_node(node, merit);
+        while let Some((node, _)) = self.dequeue() {
+            self.visit_node(node);
         }
     }
 }
 
 struct NaiveAStarBottomUpExtractor<'a> {
-    egraph:           &'a EGraph,
-    eqc_parents:      FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
-    node_delay:       FxHashMap<&'a NodeId, usize>,
-    branch_path_cost: FxHashMap<&'a NodeId, Cost>,
-    queue:            PrioQueue<Action<'a>, Merit>,
-    eqc_min_cost:     FxHashMap<&'a ClassId, Cost>,
-    eqc_min:          IndexMap<ClassId, NodeId>
+    egraph:       &'a EGraph,
+    eqc_parents:  FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
+    node_delay:   FxHashMap<&'a NodeId, usize>,
+    parent_cost:  FxHashMap<&'a NodeId, Cost>,
+    queue:        PrioQueue<Action<'a>, Merit>,
+    eqc_min_cost: FxHashMap<&'a ClassId, Cost>,
+    eqc_min:      IndexMap<ClassId, NodeId>
 }
 
 impl<'a> NaiveAStarBottomUpExtractor<'a> {
     fn init(top_down: NaiveAStarTopDownExtractor<'a>) -> NaiveAStarBottomUpExtractor<'a> {
         NaiveAStarBottomUpExtractor {
-            egraph:           top_down.egraph,
-            eqc_parents:      top_down.eqc_parents,
-            node_delay:       top_down.node_delay,
-            branch_path_cost: top_down.branch_path_cost,
-            queue:            top_down.leaves,
-            eqc_min_cost:     Default::default(),
-            eqc_min:          IndexMap::new()
+            egraph:       top_down.egraph,
+            eqc_parents:  top_down.eqc_parents,
+            node_delay:   top_down.node_delay,
+            parent_cost:  top_down.parent_cost,
+            queue:        top_down.leaves,
+            eqc_min_cost: Default::default(),
+            eqc_min:      IndexMap::new()
         }
     }
 
@@ -189,9 +192,9 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
     }
 
     fn enqueue_branch_node_visit(&mut self, node: &'a NodeId) {
-        let path_cost = self.branch_path_cost.get(node).copied().unwrap();
-        let cost = self.get_min_node_cost(node);
-        let merit = Merit { cost: cost, path_cost };
+        let top_down_cost = self.parent_cost.get(node).copied().unwrap();
+        let bottom_up_cost = self.get_min_node_cost(node);
+        let merit = Merit { top_down_cost, bottom_up_cost };
         self.enqueue(Action::Visit(node), merit);
     }
 
@@ -209,7 +212,7 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
 
     fn assign_eqc(&mut self, eqc: &'a ClassId, node: &'a NodeId, merit: Merit) {
         if !self.eqc_has_min(eqc) {
-            self.set_eqc_min(eqc, node, merit.cost);
+            self.set_eqc_min(eqc, node, merit.bottom_up_cost);
             self.update_eqc_parents(eqc);
         }
     }
