@@ -3,30 +3,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use super::*;
 
 #[derive(PartialEq, Eq)]
-struct Merit {
-    top_down_cost: Cost,
-    bottom_up_cost: Cost
-}
-
-impl Merit {
-    fn total(&self) -> Cost {
-        self.top_down_cost + self.bottom_up_cost
-    }
-}
-
-impl PartialOrd for Merit {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Merit {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.total().cmp(&other.total())
-    }
-}
-
-#[derive(PartialEq, Eq)]
 enum Action<'a> {
     Visit(&'a NodeId),
     Assign(&'a ClassId, &'a NodeId)
@@ -37,21 +13,21 @@ struct NaiveAStarTopDownExtractor<'a> {
     eqc_parents:   FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
     node_delay:    FxHashMap<&'a NodeId, usize>,
     parent_cost:   FxHashMap<&'a NodeId, Cost>,
+    node_cost:     FxHashMap<&'a NodeId, Cost>,
     enqueued_eqcs: FxHashSet<&'a ClassId>,
-    queue:         PrioQueue<&'a NodeId, Cost>, 
-    leaves:        PrioQueue<Action<'a>, Merit>
+    queue:         PrioQueue<&'a NodeId, Cost>,
+    leaves:        PrioQueue<Action<'a>, Cost>
 }
 
 impl<'a> NaiveAStarTopDownExtractor<'a> {
     fn new(egraph: &'a EGraph) -> NaiveAStarTopDownExtractor<'a> {
-        let num_eqcs = egraph.classes().len();
-        let num_nodes = egraph.nodes.len();
         NaiveAStarTopDownExtractor {
             egraph,
-            eqc_parents:   FxHashMap::with_capacity_and_hasher(num_eqcs, Default::default()),
-            node_delay:    FxHashMap::with_capacity_and_hasher(num_nodes, Default::default()),
-            parent_cost:   FxHashMap::with_capacity_and_hasher(num_nodes, Default::default()),
-            enqueued_eqcs: FxHashSet::with_capacity_and_hasher(num_eqcs, Default::default()),
+            eqc_parents:   Default::default(),
+            node_delay:    Default::default(),
+            parent_cost:   Default::default(),
+            node_cost:     Default::default(),
+            enqueued_eqcs: Default::default(),
             queue:         PrioQueue::new(),
             leaves:        PrioQueue::new()
         }
@@ -97,10 +73,15 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         self.parent_cost.insert(node, parent_cost);
     }
 
+    fn set_node_cost(&mut self, node: &'a NodeId, cost: Cost) {
+        self.node_cost.insert(node, cost);
+    }
+
     fn add_leaf(&mut self, node: &'a NodeId) {
         let top_down_cost = self.parent_cost[node];
         let bottom_up_cost = self.egraph[node].cost;
-        let merit = Merit { top_down_cost, bottom_up_cost };
+        self.set_node_cost(node, bottom_up_cost);
+        let merit = top_down_cost + bottom_up_cost;
         self.leaves.insert(Action::Visit(node), merit);
     }
 
@@ -142,7 +123,8 @@ struct NaiveAStarBottomUpExtractor<'a> {
     eqc_parents:  FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
     node_delay:   FxHashMap<&'a NodeId, usize>,
     parent_cost:  FxHashMap<&'a NodeId, Cost>,
-    queue:        PrioQueue<Action<'a>, Merit>,
+    node_cost:    FxHashMap<&'a NodeId, Cost>,
+    queue:        PrioQueue<Action<'a>, Cost>,
     eqc_min_cost: FxHashMap<&'a ClassId, Cost>,
     eqc_min:      IndexMap<ClassId, NodeId>
 }
@@ -154,6 +136,7 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
             eqc_parents:  top_down.eqc_parents,
             node_delay:   top_down.node_delay,
             parent_cost:  top_down.parent_cost,
+            node_cost:    top_down.node_cost,
             queue:        top_down.leaves,
             eqc_min_cost: Default::default(),
             eqc_min:      IndexMap::new()
@@ -164,7 +147,8 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         self.eqc_min.contains_key(eqc)
     }
 
-    fn set_eqc_min(&mut self, eqc: &'a ClassId, node: &'a NodeId, cost: Cost) {
+    fn set_eqc_min(&mut self, eqc: &'a ClassId, node: &'a NodeId) {
+        let cost = self.node_cost[node];
         self.eqc_min_cost.entry(eqc).or_insert(cost);
         self.eqc_min.entry(eqc.clone()).or_insert_with(|| node.clone());
     }
@@ -173,11 +157,15 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         self.node_delay.insert(node, delay);
     }
 
-    fn enqueue(&mut self, action: Action<'a>, merit: Merit) {
+    fn set_node_cost(&mut self, node: &'a NodeId, cost: Cost) {
+        self.node_cost.insert(node, cost);
+    }
+
+    fn enqueue(&mut self, action: Action<'a>, merit: Cost) {
         self.queue.insert(action, merit);
     }
 
-    fn dequeue(&mut self) -> Option<(Action<'a>, Merit)> {
+    fn dequeue(&mut self) -> Option<(Action<'a>, Cost)> {
         self.queue.pop()
     }
 
@@ -194,7 +182,8 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
     fn enqueue_branch_node_visit(&mut self, node: &'a NodeId) {
         let top_down_cost = self.parent_cost.get(node).copied().unwrap();
         let bottom_up_cost = self.get_min_node_cost(node);
-        let merit = Merit { top_down_cost, bottom_up_cost };
+        self.set_node_cost(node, bottom_up_cost);
+        let merit = top_down_cost + bottom_up_cost;
         self.enqueue(Action::Visit(node), merit);
     }
 
@@ -210,22 +199,22 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         }
     }
 
-    fn assign_eqc(&mut self, eqc: &'a ClassId, node: &'a NodeId, merit: Merit) {
+    fn assign_eqc(&mut self, eqc: &'a ClassId, node: &'a NodeId) {
         if !self.eqc_has_min(eqc) {
-            self.set_eqc_min(eqc, node, merit.bottom_up_cost);
+            self.set_eqc_min(eqc, node);
             self.update_eqc_parents(eqc);
         }
     }
 
-    fn visit_node(&mut self, node: &'a NodeId, merit: Merit) {
+    fn visit_node(&mut self, node: &'a NodeId, merit: Cost) {
         let eqc = self.egraph.nid_to_cid(node);
         self.enqueue(Action::Assign(eqc, node), merit);
     }
 
-    fn run_action(&mut self, action: Action<'a>, merit: Merit) {
+    fn run_action(&mut self, action: Action<'a>, merit: Cost) {
         match action {
             Action::Visit(node)       => self.visit_node(node, merit),
-            Action::Assign(eqc, node) => self.assign_eqc(eqc, node, merit),
+            Action::Assign(eqc, node) => self.assign_eqc(eqc, node),
         }
     }
 
