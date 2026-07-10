@@ -49,8 +49,8 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         self.eqc_parents.entry(eqc).or_insert_with(Vec::new).push(node);
     }
 
-    fn dequeue(&mut self) -> Option<(&'a NodeId, Cost)> {
-        self.queue.pop()
+    fn dequeue(&mut self) -> Option<&'a NodeId> {
+        self.queue.pop().map(|(node, _)| node)
     }
 
     fn enqueue_node(&mut self, node: &'a NodeId, parent_cost: Cost) {
@@ -87,14 +87,14 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
 
     fn visit_branch_node(&mut self, node: &'a NodeId) {
         let egraph = self.egraph;
-        let parent_cost = self.parent_cost[node];
+        let td_cost = self.parent_cost[node] + self.egraph[node].cost;
         let mut unique_child_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
 
         for child in &egraph[node].children {
             let eqc = egraph.nid_to_cid(child);
             if unique_child_eqcs.insert(eqc) {
                 self.add_eqc_parent(eqc, node);
-                self.enqueue_eqc(eqc, parent_cost);
+                self.enqueue_eqc(eqc, td_cost);
             }
         }
 
@@ -112,7 +112,7 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
     fn run(&mut self, target: &'a ClassId) {
         let zero = NotNan::new(0.0).unwrap();
         self.enqueue_eqc(target, zero);
-        while let Some((node, _)) = self.dequeue() {
+        while let Some(node) = self.dequeue() {
             self.visit_node(node);
         }
     }

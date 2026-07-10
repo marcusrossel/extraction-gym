@@ -110,7 +110,7 @@ impl<'a> AStarExt<'a> {
     fn visit_branch_node(&mut self, node: &'a NodeId) {
         let mut child_costs = Vec::new();
         let mut delayed_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
-        let parent_cost = self.parent_cost[node];
+        let td_cost = self.parent_cost[node] + self.egraph[node].cost;
         for child in &self.egraph[node].children {
             let eqc = self.egraph.nid_to_cid(child);
             // (1) If the child `eqc` is already resolved, remember its cost.
@@ -123,7 +123,7 @@ impl<'a> AStarExt<'a> {
                 // times, as this would break the delay count.
                 delayed_eqcs.insert(eqc);
                 self.add_eqc_parent(eqc, node);
-                self.enqueue_visit_eqc(eqc, parent_cost);
+                self.enqueue_visit_eqc(eqc, td_cost);
             }
         }
         if delayed_eqcs.is_empty() {
