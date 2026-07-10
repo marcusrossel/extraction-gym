@@ -16,7 +16,9 @@ pub mod ilp_cbc;
 pub mod prio_queue;
 pub mod reach_prio_queue;
 pub mod naive_a_star;
+pub mod naive_a_star_inlined;
 pub mod a_star;
+pub mod a_star_inlined;
 
 // Allowance for floating point values to be considered equal
 pub const EPSILON_ALLOWANCE: f64 = 0.00001;
