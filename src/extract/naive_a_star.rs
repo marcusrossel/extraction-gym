@@ -157,6 +157,10 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         self.node_delay.insert(node, delay);
     }
 
+    fn erase_node_delay(&mut self, node: &'a NodeId) {
+        self.node_delay.remove(node);
+    }
+
     fn set_node_cost(&mut self, node: &'a NodeId, cost: Cost) {
         self.node_cost.insert(node, cost);
     }
@@ -192,8 +196,13 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         let parents = parents.clone();
         for parent in parents {
             match self.node_delay.get(parent).copied() {
-                Some(1) => self.enqueue_branch_node_visit(parent),
-                Some(n) if n > 1 => self.set_node_delay(parent, n - 1),
+                Some(1) => {
+                    self.erase_node_delay(parent);
+                    self.enqueue_branch_node_visit(parent)
+                },
+                Some(n) if n > 1 => {
+                    self.set_node_delay(parent, n - 1)
+                },
                 _ => panic!("Reached bad path in `update_eqc_parents`."),
             }
         }

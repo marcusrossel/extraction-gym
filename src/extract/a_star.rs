@@ -51,6 +51,10 @@ impl<'a> AStarExt<'a> {
         self.node_delay.insert(node, delay);
     }
 
+    fn erase_node_delay(&mut self, node: &'a NodeId) {
+        self.node_delay.remove(node);
+    }
+
     fn set_node_cost(&mut self, node: &'a NodeId, cost: Cost) {
         self.node_cost.insert(node, cost);
     }
@@ -159,6 +163,7 @@ impl<'a> AStarExt<'a> {
         for parent in parents {
             match self.node_delay.get(parent).copied() {
                 Some(1) => {
+                    self.erase_node_delay(parent);
                     let child_costs = self.node_child_costs(parent);
                     self.enqueue_assignment(parent, child_costs);
                 },
