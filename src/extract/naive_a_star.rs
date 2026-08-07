@@ -2,12 +2,6 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::*;
 
-#[derive(PartialEq, Eq)]
-enum Action<'a> {
-    Visit(&'a NodeId),
-    Assign(&'a ClassId, &'a NodeId)
-}
-
 struct NaiveAStarTopDownExtractor<'a> {
     egraph:        &'a EGraph,
     eqc_parents:   FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
@@ -16,7 +10,7 @@ struct NaiveAStarTopDownExtractor<'a> {
     node_cost:     FxHashMap<&'a NodeId, Cost>,
     enqueued_eqcs: FxHashSet<&'a ClassId>,
     queue:         PrioQueue<&'a NodeId, Cost>,
-    leaves:        PrioQueue<Action<'a>, Cost>
+    leaves:        PrioQueue<&'a NodeId, Cost>
 }
 
 impl<'a> NaiveAStarTopDownExtractor<'a> {
@@ -82,7 +76,7 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         let bottom_up_cost = self.egraph[node].cost;
         self.set_node_cost(node, bottom_up_cost);
         let merit = top_down_cost + bottom_up_cost;
-        self.leaves.insert(Action::Visit(node), merit);
+        self.leaves.insert(node, merit);
     }
 
     fn visit_branch_node(&mut self, node: &'a NodeId) {
@@ -124,7 +118,7 @@ struct NaiveAStarBottomUpExtractor<'a> {
     node_delay:   FxHashMap<&'a NodeId, usize>,
     parent_cost:  FxHashMap<&'a NodeId, Cost>,
     node_cost:    FxHashMap<&'a NodeId, Cost>,
-    queue:        PrioQueue<Action<'a>, Cost>,
+    queue:        PrioQueue<&'a NodeId, Cost>,
     eqc_min_cost: FxHashMap<&'a ClassId, Cost>,
     eqc_min:      IndexMap<ClassId, NodeId>
 }
@@ -165,12 +159,8 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         self.node_cost.insert(node, cost);
     }
 
-    fn enqueue(&mut self, action: Action<'a>, merit: Cost) {
-        self.queue.insert(action, merit);
-    }
-
-    fn dequeue(&mut self) -> Option<(Action<'a>, Cost)> {
-        self.queue.pop()
+    fn dequeue(&mut self) -> Option<&'a NodeId> {
+        self.queue.pop().map(|(node, _)| node)
     }
 
     // Like `ExtractionResult::node_sum_cost`.
@@ -183,54 +173,32 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         node.cost + total_child_cost
     }
 
-    fn enqueue_branch_node_visit(&mut self, node: &'a NodeId) {
+    fn enqueue(&mut self, node: &'a NodeId) {
         let top_down_cost = self.parent_cost.get(node).copied().unwrap();
         let bottom_up_cost = self.get_min_node_cost(node);
         self.set_node_cost(node, bottom_up_cost);
         let merit = top_down_cost + bottom_up_cost;
-        self.enqueue(Action::Visit(node), merit);
+        self.queue.insert(node, merit);
     }
 
-    fn update_eqc_parents(&mut self, eqc: &'a ClassId) {
-        let Some(parents) = self.eqc_parents.get(eqc) else { return; };
-        let parents = parents.clone();
-        for parent in parents {
-            match self.node_delay.get(parent).copied() {
-                Some(1) => {
-                    self.erase_node_delay(parent);
-                    self.enqueue_branch_node_visit(parent)
-                },
-                Some(n) if n > 1 => {
-                    self.set_node_delay(parent, n - 1)
-                },
-                _ => panic!("Reached bad path in `update_eqc_parents`."),
-            }
-        }
-    }
-
-    fn assign_eqc(&mut self, eqc: &'a ClassId, node: &'a NodeId) {
-        if !self.eqc_has_min(eqc) {
+    fn run(&mut self) {
+        while let Some(node) = self.dequeue() {
+            let eqc = self.egraph.nid_to_cid(node);
+            if self.eqc_has_min(eqc) { continue }
             self.set_eqc_min(eqc, node);
-            self.update_eqc_parents(eqc);
-        }
-    }
-
-    fn visit_node(&mut self, node: &'a NodeId, merit: Cost) {
-        let eqc = self.egraph.nid_to_cid(node);
-        self.enqueue(Action::Assign(eqc, node), merit);
-    }
-
-    fn run_action(&mut self, action: Action<'a>, merit: Cost) {
-        match action {
-            Action::Visit(node)       => self.visit_node(node, merit),
-            Action::Assign(eqc, node) => self.assign_eqc(eqc, node),
-        }
-    }
-
-    fn run(&mut self, target: &'a ClassId) {
-        while let Some((action, merit)) = self.dequeue() {
-            self.run_action(action, merit);
-            if self.eqc_has_min(target) { break }
+            let Some(parents) = self.eqc_parents.get(eqc) else { break };
+            for parent in parents.iter().copied().collect::<Vec<&'a NodeId>>() {
+                match self.node_delay.get(parent).copied() {
+                    Some(1) => {
+                        self.erase_node_delay(parent);
+                        self.enqueue(parent)
+                    },
+                    Some(n) if n > 1 => {
+                        self.set_node_delay(parent, n - 1)
+                    },
+                    _ => panic!("Reached bad path in `NaiveAStarBottomUpExtractor::main`."),
+                }
+            }
         }
     }
 }
@@ -246,7 +214,7 @@ impl Extractor for NaiveAStarExtractor {
         let mut top_down = NaiveAStarTopDownExtractor::new(egraph);
         top_down.run(target);
         let mut bottom_up = NaiveAStarBottomUpExtractor::init(top_down);
-        bottom_up.run(target);
+        bottom_up.run();
         ExtractionResult { choices: bottom_up.eqc_min }
     }
 }
