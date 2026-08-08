@@ -157,44 +157,32 @@ impl<'a> AStarExt<'a> {
         }).collect()
     }
 
-    fn update_eqc_parents(&mut self, eqc: &'a ClassId) {
-        let Some(parents) = self.eqc_parents.get(eqc) else { return; };
-        let parents = parents.clone();
-        for parent in parents {
-            match self.node_delay.get(parent).copied() {
-                Some(1) => {
-                    self.erase_node_delay(parent);
-                    let child_costs = self.node_child_costs(parent);
-                    self.enqueue_assignment(parent, child_costs);
-                },
-                Some(n) if n > 1 => {
-                    self.set_node_delay(parent, n - 1)
-                },
-                _ => panic!("Reached bad path in `update_eqc_parents`."),
-            }
-        }
-    }
-
-    fn assign_eqc(&mut self, eqc: &'a ClassId, node: &'a NodeId) {
-        if !self.eqc_has_min(eqc) {
-            self.set_eqc_min(eqc, node);
-            self.update_eqc_parents(eqc);
-        }
-    }
-
-    fn run_action(&mut self, action: Action<'a>) {
-        match action {
-            Action::Visit(node)       => self.visit_node(node),
-            Action::Assign(eqc, node) => self.assign_eqc(eqc, node),
-        }
-    }
-
     fn run(&mut self, target: &'a ClassId) {
         let zero = NotNan::new(0.0).unwrap();
         self.enqueue_visit_eqc(target, zero);
         while let Some(action) = self.dequeue() {
-            self.run_action(action);
-            if self.eqc_has_min(target) { break }
+            match action {
+                Action::Visit(node) => self.visit_node(node),
+                Action::Assign(eqc, node) => {
+                    if self.eqc_has_min(eqc) { continue }
+                    self.set_eqc_min(eqc, node);
+                    let Some(parents) = self.eqc_parents.get(eqc) else { break };
+                    let parents = parents.clone();
+                    for parent in parents {
+                        match self.node_delay.get(parent).copied() {
+                            Some(1) => {
+                                self.erase_node_delay(parent);
+                                let child_costs = self.node_child_costs(parent);
+                                self.enqueue_assignment(parent, child_costs);
+                            },
+                            Some(n) if n > 1 => {
+                                self.set_node_delay(parent, n - 1)
+                            },
+                            _ => panic!("Reached bad path in `AStarExt::run`."),
+                        }
+                    }
+                }
+            }
         }
     }
 }
