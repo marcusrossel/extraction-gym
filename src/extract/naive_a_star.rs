@@ -79,35 +79,27 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         self.leaves.insert(node, merit);
     }
 
-    fn visit_branch_node(&mut self, node: &'a NodeId) {
-        let egraph = self.egraph;
-        let td_cost = self.parent_cost[node] + self.egraph[node].cost;
-        let mut unique_child_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
-
-        for child in &egraph[node].children {
-            let eqc = egraph.nid_to_cid(child);
-            if unique_child_eqcs.insert(eqc) {
-                self.add_eqc_parent(eqc, node);
-                self.enqueue_eqc(eqc, td_cost);
-            }
-        }
-
-        self.set_node_delay(node, unique_child_eqcs.len());
-    }
-
-    fn visit_node(&mut self, node: &'a NodeId) {
-        if self.egraph[node].children.is_empty() {
-            self.add_leaf(node);
-        } else {
-            self.visit_branch_node(node);
-        }
-    }
-
     fn run(&mut self, target: &'a ClassId) {
         let zero = NotNan::new(0.0).unwrap();
         self.enqueue_eqc(target, zero);
         while let Some(node) = self.dequeue() {
-            self.visit_node(node);
+            if self.egraph[node].children.is_empty() {
+            self.add_leaf(node);
+            } else {
+                let egraph = self.egraph;
+                let td_cost = self.parent_cost[node] + self.egraph[node].cost;
+                let mut unique_child_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
+
+                for child in &egraph[node].children {
+                    let eqc = egraph.nid_to_cid(child);
+                    if unique_child_eqcs.insert(eqc) {
+                        self.add_eqc_parent(eqc, node);
+                        self.enqueue_eqc(eqc, td_cost);
+                    }
+                }
+
+                self.set_node_delay(node, unique_child_eqcs.len());
+            }
         }
     }
 }
