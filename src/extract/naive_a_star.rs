@@ -6,7 +6,7 @@ struct NaiveAStarTopDownExtractor<'a> {
     egraph:        &'a EGraph,
     eqc_parents:   FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
     node_delay:    FxHashMap<&'a NodeId, usize>,
-    parent_cost:   FxHashMap<&'a NodeId, Cost>,
+    parent_cost:   FxHashMap<&'a ClassId, Cost>,
     node_cost:     FxHashMap<&'a NodeId, Cost>,
     enqueued_eqcs: FxHashSet<&'a ClassId>,
     queue:         PrioQueue<&'a NodeId, Cost>,
@@ -31,6 +31,10 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         self.node_delay.insert(node, delay);
     }
 
+    fn set_parent_cost(&mut self, eqc: &'a ClassId, cost: Cost) {
+        self.parent_cost.insert(eqc, cost);
+    }
+
     fn add_enqueued_eqc(&mut self, eqc: &'a ClassId) {
         self.enqueued_eqcs.insert(eqc);
     }
@@ -48,7 +52,6 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
     }
 
     fn enqueue_node(&mut self, node: &'a NodeId, parent_cost: Cost) {
-        self.set_parent_cost(node, parent_cost);
         let td_cost = parent_cost + self.egraph[node].cost;
         self.queue.insert(node, td_cost);
     }
@@ -59,23 +62,17 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
             for node in &egraph.classes()[eqc].nodes {
                 self.enqueue_node(node, parent_cost);
             }
+            self.set_parent_cost(eqc, parent_cost);
             self.add_enqueued_eqc(eqc);
         }
     }
 
-    fn set_parent_cost(&mut self, node: &'a NodeId, parent_cost: Cost) {
-        self.parent_cost.insert(node, parent_cost);
-    }
-
-    fn set_node_cost(&mut self, node: &'a NodeId, cost: Cost) {
-        self.node_cost.insert(node, cost);
-    }
-
     fn add_leaf(&mut self, node: &'a NodeId) {
-        let top_down_cost = self.parent_cost[node];
+        let eqc = self.egraph.nid_to_cid(node);
         let bottom_up_cost = self.egraph[node].cost;
-        self.set_node_cost(node, bottom_up_cost);
+        let top_down_cost = self.parent_cost[eqc];
         let merit = top_down_cost + bottom_up_cost;
+        self.node_cost.insert(node, bottom_up_cost);
         self.leaves.insert(node, merit);
     }
 
@@ -84,10 +81,11 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         self.enqueue_eqc(target, zero);
         while let Some(node) = self.dequeue() {
             if self.egraph[node].children.is_empty() {
-            self.add_leaf(node);
+                self.add_leaf(node);
             } else {
                 let egraph = self.egraph;
-                let td_cost = self.parent_cost[node] + self.egraph[node].cost;
+                let eqc = egraph.nid_to_cid(node);
+                let td_cost = self.parent_cost[eqc] + self.egraph[node].cost;
                 let mut unique_child_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
 
                 for child in &egraph[node].children {
@@ -108,7 +106,7 @@ struct NaiveAStarBottomUpExtractor<'a> {
     egraph:       &'a EGraph,
     eqc_parents:  FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
     node_delay:   FxHashMap<&'a NodeId, usize>,
-    parent_cost:  FxHashMap<&'a NodeId, Cost>,
+    parent_cost:  FxHashMap<&'a ClassId, Cost>,
     node_cost:    FxHashMap<&'a NodeId, Cost>,
     queue:        PrioQueue<&'a NodeId, Cost>,
     eqc_min_cost: FxHashMap<&'a ClassId, Cost>,
@@ -166,10 +164,11 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
     }
 
     fn enqueue(&mut self, node: &'a NodeId) {
-        let top_down_cost = self.parent_cost.get(node).copied().unwrap();
+        let eqc = self.egraph.nid_to_cid(node);
         let bottom_up_cost = self.get_min_node_cost(node);
-        self.set_node_cost(node, bottom_up_cost);
+        let top_down_cost = self.parent_cost.get(eqc).copied().unwrap();
         let merit = top_down_cost + bottom_up_cost;
+        self.set_node_cost(node, bottom_up_cost);
         self.queue.insert(node, merit);
     }
 
