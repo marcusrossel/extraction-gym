@@ -9,31 +9,29 @@ enum Action<'a> {
 }
 
 // TODO: Would it make sense to collapse some of the maps below when they are mapping from the same 
-//       type? E.g. `node_delay`, `parent_cost`, `node_cost`.
+//       type? E.g. `eqc_parents`, `parent_cost`, `eqc_min_cost`.
 struct AStarExt<'a> {
-    egraph:        &'a EGraph,
-    queue:         PrioQueue<Action<'a>, Cost>,
-    enqueued_eqcs: FxHashSet<&'a ClassId>,
-    node_delay:    FxHashMap<&'a NodeId, usize>,
-    eqc_parents:   FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
-    parent_cost:   FxHashMap<&'a NodeId, Cost>,
-    node_cost:     FxHashMap<&'a NodeId, Cost>,
-    eqc_min_cost:  FxHashMap<&'a ClassId, Cost>,
-    eqc_min:       IndexMap<ClassId, NodeId>
+    egraph:       &'a EGraph,
+    queue:        PrioQueue<Action<'a>, Cost>,
+    node_delay:   FxHashMap<&'a NodeId, usize>,
+    eqc_parents:  FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
+    parent_cost:  FxHashMap<&'a ClassId, Cost>,
+    node_cost:    FxHashMap<&'a NodeId, Cost>,
+    eqc_min_cost: FxHashMap<&'a ClassId, Cost>,
+    eqc_min:      IndexMap<ClassId, NodeId>
 }
 
 impl<'a> AStarExt<'a> {
     fn new(egraph: &'a EGraph) -> AStarExt<'a> {
         AStarExt {
             egraph,
-            queue:         PrioQueue::new(),
-            enqueued_eqcs: Default::default(),
-            node_delay:    Default::default(),
-            eqc_parents:   Default::default(),
-            parent_cost:   Default::default(),
-            node_cost:     Default::default(),
-            eqc_min_cost:  Default::default(),
-            eqc_min:       Default::default()
+            queue:        PrioQueue::new(),
+            node_delay:   Default::default(),
+            eqc_parents:  Default::default(),
+            parent_cost:  Default::default(),
+            node_cost:    Default::default(),
+            eqc_min_cost: Default::default(),
+            eqc_min:      Default::default()
         }
     }
 
@@ -59,16 +57,15 @@ impl<'a> AStarExt<'a> {
         self.node_cost.insert(node, cost);
     }
 
-    fn set_parent_cost(&mut self, node: &'a NodeId, cost: Cost) {
-        self.parent_cost.insert(node, cost);
+    fn set_parent_cost(&mut self, eqc: &'a ClassId, cost: Cost) {
+        self.parent_cost.insert(eqc, cost);
     }
 
-    fn add_enqueued_eqc(&mut self, eqc: &'a ClassId) {
-        self.enqueued_eqcs.insert(eqc);
-    }
-
+    // Determines whether a given e-class has already been enqueued via `enqueue_visit_eqc`. As
+    // `enqueue_visit_eqc` always sets `parent_cost` for the given e-class, we use membership in
+    // this map as the indicator.
     fn is_enqueued_eqc(&self, eqc: &ClassId) -> bool {
-        self.enqueued_eqcs.contains(eqc)
+        self.parent_cost.contains_key(eqc)
     }
 
     fn add_eqc_parent(&mut self, eqc: &'a ClassId, node: &'a NodeId) {
@@ -84,7 +81,6 @@ impl<'a> AStarExt<'a> {
     }
 
     fn enqueue_visit_node(&mut self, node: &'a NodeId, parent_cost: Cost) {
-        self.set_parent_cost(node, parent_cost);
         let top_down_cost = parent_cost + self.egraph[node].cost;
         let action = Action::Visit(node);
         self.enqueue(action, top_down_cost);
@@ -94,9 +90,9 @@ impl<'a> AStarExt<'a> {
         // Like `ExtractionResult::node_sum_cost`.
         let bottom_up_cost = self.egraph[node].cost + child_costs.iter().sum::<NotNan<f64>>();
         self.set_node_cost(node, bottom_up_cost);
-        let top_down_cost = self.parent_cost[node];
-        let merit = top_down_cost + bottom_up_cost;
         let eqc = self.egraph.nid_to_cid(node);
+        let top_down_cost = self.parent_cost[eqc];
+        let merit = top_down_cost + bottom_up_cost;
         let action = Action::Assign(eqc, node);
         self.enqueue(action, merit);
     }
@@ -107,27 +103,28 @@ impl<'a> AStarExt<'a> {
             for node in &egraph.classes()[eqc].nodes {
                 self.enqueue_visit_node(node, parent_cost);
             }
-            self.add_enqueued_eqc(eqc);
+            self.set_parent_cost(eqc, parent_cost);
         }
     }
 
     fn visit_branch_node(&mut self, node: &'a NodeId) {
         let mut child_costs = Vec::new();
         let mut delayed_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
-        let td_cost = self.parent_cost[node] + self.egraph[node].cost;
+        let eqc = self.egraph.nid_to_cid(node);
+        let td_cost = self.parent_cost[eqc] + self.egraph[node].cost;
         for child in &self.egraph[node].children {
-            let eqc = self.egraph.nid_to_cid(child);
+            let child = self.egraph.nid_to_cid(child);
             // (1) If the child `eqc` is already resolved, remember its cost.
             // (2) If `eqc` is not resolved, set the parent-child relationship, and enqueue `eqc`
             //     (the node delay is set after the loop).
-            if let Some(&cost) = self.eqc_min_cost.get(eqc) {
+            if let Some(&cost) = self.eqc_min_cost.get(child) {
                 child_costs.push(cost);
-            } else if !delayed_eqcs.contains(eqc) {
+            } else if !delayed_eqcs.contains(child) {
                 // It is important that we do not register the same e-class as delayed multiple
                 // times, as this would break the delay count.
-                delayed_eqcs.insert(eqc);
-                self.add_eqc_parent(eqc, node);
-                self.enqueue_visit_eqc(eqc, td_cost);
+                delayed_eqcs.insert(child);
+                self.add_eqc_parent(child, node);
+                self.enqueue_visit_eqc(child, td_cost);
             }
         }
         if delayed_eqcs.is_empty() {
