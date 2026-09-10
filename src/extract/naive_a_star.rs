@@ -3,27 +3,25 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use super::*;
 
 struct NaiveAStarTopDownExtractor<'a> {
-    egraph:        &'a EGraph,
-    eqc_parents:   FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
-    node_delay:    FxHashMap<&'a NodeId, usize>,
-    parent_cost:   FxHashMap<&'a ClassId, Cost>,
-    node_cost:     FxHashMap<&'a NodeId, Cost>,
-    enqueued_eqcs: FxHashSet<&'a ClassId>,
-    queue:         PrioQueue<&'a NodeId, Cost>,
-    leaves:        PrioQueue<&'a NodeId, Cost>
+    egraph:      &'a EGraph,
+    eqc_parents: FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
+    node_delay:  FxHashMap<&'a NodeId, usize>,
+    parent_cost: FxHashMap<&'a ClassId, Cost>,
+    node_cost:   FxHashMap<&'a NodeId, Cost>,
+    queue:       PrioQueue<&'a NodeId, Cost>,
+    leaves:      PrioQueue<&'a NodeId, Cost>
 }
 
 impl<'a> NaiveAStarTopDownExtractor<'a> {
     fn new(egraph: &'a EGraph) -> NaiveAStarTopDownExtractor<'a> {
         NaiveAStarTopDownExtractor {
             egraph,
-            eqc_parents:   Default::default(),
-            node_delay:    Default::default(),
-            parent_cost:   Default::default(),
-            node_cost:     Default::default(),
-            enqueued_eqcs: Default::default(),
-            queue:         PrioQueue::new(),
-            leaves:        PrioQueue::new()
+            eqc_parents: Default::default(),
+            node_delay:  Default::default(),
+            parent_cost: Default::default(),
+            node_cost:   Default::default(),
+            queue:       PrioQueue::new(),
+            leaves:      PrioQueue::new()
         }
     }
 
@@ -35,12 +33,11 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         self.parent_cost.insert(eqc, cost);
     }
 
-    fn add_enqueued_eqc(&mut self, eqc: &'a ClassId) {
-        self.enqueued_eqcs.insert(eqc);
-    }
-
+    // Determines whether a given e-class has already been enqueued via `enqueue_eqc`. As
+    // `enqueue_eqc` always sets `parent_cost` for the given e-class, we use membership in this map
+    // as the indicator.
     fn is_enqueued_eqc(&self, eqc: &ClassId) -> bool {
-        self.enqueued_eqcs.contains(eqc)
+        self.parent_cost.contains_key(eqc)
     }
 
     fn add_eqc_parent(&mut self, eqc: &'a ClassId, node: &'a NodeId) {
@@ -63,7 +60,6 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
                 self.enqueue_node(node, parent_cost);
             }
             self.set_parent_cost(eqc, parent_cost);
-            self.add_enqueued_eqc(eqc);
         }
     }
 
