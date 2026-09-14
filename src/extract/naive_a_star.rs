@@ -2,12 +2,32 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::*;
 
+// The state associated with an e-node over the course of the extraction. As an e-node's bottom-up
+// cost only becomes known once all of its child e-classes have been assigned a minimal e-node, the
+// two states are mutually exclusive and can therefore share a single map.
+enum NodeState {
+    // The number of child e-classes which have not yet been assigned a minimal e-node. This is set
+    // during the top-down phase and counted down during the bottom-up phase.
+    Delay(usize),
+    // The bottom-up cost of the e-node. Leaves obtain this state during the top-down phase, all
+    // other e-nodes when their delay reaches zero during the bottom-up phase.
+    Cost(Cost)
+}
+
+impl NodeState {
+    fn cost(&self) -> Cost {
+        match self {
+            NodeState::Cost(cost) => *cost,
+            NodeState::Delay(_)   => panic!("Accessed the cost of an unresolved e-node.")
+        }
+    }
+}
+
 struct NaiveAStarTopDownExtractor<'a> {
     egraph:      &'a EGraph,
     eqc_parents: FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
-    node_delay:  FxHashMap<&'a NodeId, usize>,
+    node_state:  FxHashMap<&'a NodeId, NodeState>,
     parent_cost: FxHashMap<&'a ClassId, Cost>,
-    node_cost:   FxHashMap<&'a NodeId, Cost>,
     queue:       PrioQueue<&'a NodeId, Cost>,
     leaves:      PrioQueue<&'a NodeId, Cost>
 }
@@ -17,16 +37,15 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         NaiveAStarTopDownExtractor {
             egraph,
             eqc_parents: Default::default(),
-            node_delay:  Default::default(),
+            node_state:  Default::default(),
             parent_cost: Default::default(),
-            node_cost:   Default::default(),
             queue:       PrioQueue::new(),
             leaves:      PrioQueue::new()
         }
     }
 
     fn set_node_delay(&mut self, node: &'a NodeId, delay: usize) {
-        self.node_delay.insert(node, delay);
+        self.node_state.insert(node, NodeState::Delay(delay));
     }
 
     fn set_parent_cost(&mut self, eqc: &'a ClassId, cost: Cost) {
@@ -68,7 +87,7 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         let bottom_up_cost = self.egraph[node].cost;
         let top_down_cost = self.parent_cost[eqc];
         let merit = top_down_cost + bottom_up_cost;
-        self.node_cost.insert(node, bottom_up_cost);
+        self.node_state.insert(node, NodeState::Cost(bottom_up_cost));
         self.leaves.insert(node, merit);
     }
 
@@ -101,12 +120,23 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
 struct NaiveAStarBottomUpExtractor<'a> {
     egraph:       &'a EGraph,
     eqc_parents:  FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
-    node_delay:   FxHashMap<&'a NodeId, usize>,
+    node_state:   FxHashMap<&'a NodeId, NodeState>,
     parent_cost:  FxHashMap<&'a ClassId, Cost>,
-    node_cost:    FxHashMap<&'a NodeId, Cost>,
     queue:        PrioQueue<&'a NodeId, Cost>,
     eqc_min_cost: FxHashMap<&'a ClassId, Cost>,
     eqc_min:      IndexMap<ClassId, NodeId>
+}
+
+// Like `ExtractionResult::node_sum_cost`. This is a free function, so that it can be called while
+// `NaiveAStarBottomUpExtractor::node_state` is mutably borrowed.
+fn min_node_cost<'a>(
+    egraph: &'a EGraph, eqc_min_cost: &FxHashMap<&'a ClassId, Cost>, node: &'a NodeId
+) -> Cost {
+    let node = &egraph[node];
+    let total_child_cost: Cost = node.children.iter().map(|child| {
+        eqc_min_cost[egraph.nid_to_cid(child)]
+    }).sum();
+    node.cost + total_child_cost
 }
 
 impl<'a> NaiveAStarBottomUpExtractor<'a> {
@@ -114,81 +144,49 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         NaiveAStarBottomUpExtractor {
             egraph:       top_down.egraph,
             eqc_parents:  top_down.eqc_parents,
-            node_delay:   top_down.node_delay,
+            node_state:   top_down.node_state,
             parent_cost:  top_down.parent_cost,
-            node_cost:    top_down.node_cost,
             queue:        top_down.leaves,
             eqc_min_cost: Default::default(),
             eqc_min:      IndexMap::new()
         }
     }
 
-    fn eqc_has_min(&self, eqc: &ClassId) -> bool {
-        self.eqc_min.contains_key(eqc)
-    }
-
-    fn set_eqc_min(&mut self, eqc: &'a ClassId, node: &'a NodeId) {
-        let cost = self.node_cost[node];
-        self.eqc_min_cost.entry(eqc).or_insert(cost);
-        self.eqc_min.entry(eqc.clone()).or_insert_with(|| node.clone());
-    }
-
-    fn set_node_delay(&mut self, node: &'a NodeId, delay: usize) {
-        self.node_delay.insert(node, delay);
-    }
-
-    fn erase_node_delay(&mut self, node: &'a NodeId) {
-        self.node_delay.remove(node);
-    }
-
-    fn set_node_cost(&mut self, node: &'a NodeId, cost: Cost) {
-        self.node_cost.insert(node, cost);
-    }
-
-    fn dequeue(&mut self) -> Option<&'a NodeId> {
-        self.queue.pop().map(|(node, _)| node)
-    }
-
-    // Like `ExtractionResult::node_sum_cost`.
-    fn get_min_node_cost(&self, node: &'a NodeId) -> Cost {
-        let node = &self.egraph[node];
-        let total_child_cost: Cost = node.children.iter().map(|child| {
-            let eqc = self.egraph.nid_to_cid(child);
-            self.eqc_min_cost.get(eqc).copied().unwrap()
-        }).sum();
-        node.cost + total_child_cost
-    }
-
-    fn enqueue(&mut self, node: &'a NodeId) {
-        let eqc = self.egraph.nid_to_cid(node);
-        let bottom_up_cost = self.get_min_node_cost(node);
-        let top_down_cost = self.parent_cost.get(eqc).copied().unwrap();
-        let merit = top_down_cost + bottom_up_cost;
-        self.set_node_cost(node, bottom_up_cost);
-        self.queue.insert(node, merit);
-    }
-
     fn run(&mut self) {
-        while let Some(node) = self.dequeue() {
-            let eqc = self.egraph.nid_to_cid(node);
-            if self.eqc_has_min(eqc) { continue }
-            self.set_eqc_min(eqc, node);
-            let Some(parents) = self.eqc_parents.get(eqc) else { break };
-            for parent in parents.iter().copied().collect::<Vec<&'a NodeId>>() {
-                match self.node_delay.get(parent).copied() {
-                    Some(1) => {
-                        self.erase_node_delay(parent);
-                        self.enqueue(parent)
+        let egraph = self.egraph;
+        // The remaining fields are destructured, so that the borrow checker sees the accesses to the
+        // maps below as disjoint. This allows `node_state` to be updated in place, while the other
+        // maps are being read.
+        let Self { eqc_parents, node_state, parent_cost, queue, eqc_min_cost, eqc_min, .. } = self;
+
+        while let Some((node, _)) = queue.pop() {
+            let eqc = egraph.nid_to_cid(node);
+            // Determines whether a given e-class has already been assigned a minimal e-node. As
+            // `eqc_min_cost` and `eqc_min` are always set in tandem, we use membership in the
+            // former as the indicator, as it uses the faster hasher.
+            if eqc_min_cost.contains_key(eqc) { continue }
+            eqc_min_cost.insert(eqc, node_state[node].cost());
+            eqc_min.insert(eqc.clone(), node.clone());
+
+            let Some(parents) = eqc_parents.get(eqc) else { break };
+            for parent in parents.iter().copied() {
+                let state = node_state.get_mut(parent).expect(BAD_PATH);
+                match state {
+                    NodeState::Delay(1) => {
+                        let bottom_up_cost = min_node_cost(egraph, eqc_min_cost, parent);
+                        let top_down_cost = parent_cost[egraph.nid_to_cid(parent)];
+                        *state = NodeState::Cost(bottom_up_cost);
+                        queue.insert(parent, top_down_cost + bottom_up_cost);
                     },
-                    Some(n) if n > 1 => {
-                        self.set_node_delay(parent, n - 1)
-                    },
-                    _ => panic!("Reached bad path in `NaiveAStarBottomUpExtractor::main`."),
+                    NodeState::Delay(delay) if *delay > 1 => *delay -= 1,
+                    _ => panic!("{}", BAD_PATH)
                 }
             }
         }
     }
 }
+
+const BAD_PATH: &str = "Reached bad path in `NaiveAStarBottomUpExtractor::run`.";
 
 pub struct NaiveAStarExtractor;
 

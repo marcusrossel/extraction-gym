@@ -8,17 +8,49 @@ enum Action<'a> {
     Assign(&'a ClassId, &'a NodeId)
 }
 
-// TODO: Would it make sense to collapse some of the maps below when they are mapping from the same 
-//       type? E.g. `eqc_parents`, `parent_cost`, `eqc_min_cost`.
+// The state associated with an e-node over the course of the extraction. As an e-node's bottom-up
+// cost only becomes known once all of its child e-classes have been assigned a minimal e-node, the
+// two states are mutually exclusive and can therefore share a single map.
+enum NodeState {
+    // The number of child e-classes which have not yet been assigned a minimal e-node.
+    Delay(usize),
+    // The bottom-up cost of the e-node, which is set when its assignment-action is enqueued.
+    Cost(Cost)
+}
+
+impl NodeState {
+    fn cost(&self) -> Cost {
+        match self {
+            NodeState::Cost(cost) => *cost,
+            NodeState::Delay(_)   => panic!("Accessed the cost of an unresolved e-node.")
+        }
+    }
+}
+
 struct AStarExt<'a> {
     egraph:       &'a EGraph,
     queue:        PrioQueue<Action<'a>, Cost>,
-    node_delay:   FxHashMap<&'a NodeId, usize>,
+    node_state:   FxHashMap<&'a NodeId, NodeState>,
     eqc_parents:  FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
     parent_cost:  FxHashMap<&'a ClassId, Cost>,
-    node_cost:    FxHashMap<&'a NodeId, Cost>,
     eqc_min_cost: FxHashMap<&'a ClassId, Cost>,
     eqc_min:      IndexMap<ClassId, NodeId>
+}
+
+// Like `ExtractionResult::node_sum_cost`.
+fn node_cost(egraph: &EGraph, node: &NodeId, child_costs: &[Cost]) -> Cost {
+    egraph[node].cost + child_costs.iter().sum::<Cost>()
+}
+
+// The costs of the minimal e-nodes of `node`'s child e-classes, which requires all of them to be
+// resolved. This is a free function, so that it can be called while `AStarExt::node_state` is
+// mutably borrowed.
+fn node_child_costs<'a>(
+    egraph: &'a EGraph, eqc_min_cost: &FxHashMap<&'a ClassId, Cost>, node: &'a NodeId
+) -> Vec<Cost> {
+    egraph[node].children.iter().map(|child| {
+        eqc_min_cost[egraph.nid_to_cid(child)]
+    }).collect()
 }
 
 impl<'a> AStarExt<'a> {
@@ -26,35 +58,29 @@ impl<'a> AStarExt<'a> {
         AStarExt {
             egraph,
             queue:        PrioQueue::new(),
-            node_delay:   Default::default(),
+            node_state:   Default::default(),
             eqc_parents:  Default::default(),
             parent_cost:  Default::default(),
-            node_cost:    Default::default(),
             eqc_min_cost: Default::default(),
             eqc_min:      Default::default()
         }
     }
 
+    // Determines whether a given e-class has already been assigned a minimal e-node. As
+    // `set_eqc_min` always sets `eqc_min_cost` and `eqc_min` in tandem, we use membership in the
+    // former as the indicator, as it uses the faster hasher.
     fn eqc_has_min(&self, eqc: &ClassId) -> bool {
-        self.eqc_min.contains_key(eqc)
+        self.eqc_min_cost.contains_key(eqc)
     }
 
     fn set_eqc_min(&mut self, eqc: &'a ClassId, node: &'a NodeId) {
-        let cost = self.node_cost[node];
-        self.eqc_min_cost.entry(eqc).or_insert(cost);
-        self.eqc_min.entry(eqc.clone()).or_insert_with(|| node.clone());
+        let cost = self.node_state[node].cost();
+        self.eqc_min_cost.insert(eqc, cost);
+        self.eqc_min.insert(eqc.clone(), node.clone());
     }
 
     fn set_node_delay(&mut self, node: &'a NodeId, delay: usize) {
-        self.node_delay.insert(node, delay);
-    }
-
-    fn erase_node_delay(&mut self, node: &'a NodeId) {
-        self.node_delay.remove(node);
-    }
-
-    fn set_node_cost(&mut self, node: &'a NodeId, cost: Cost) {
-        self.node_cost.insert(node, cost);
+        self.node_state.insert(node, NodeState::Delay(delay));
     }
 
     fn set_parent_cost(&mut self, eqc: &'a ClassId, cost: Cost) {
@@ -87,9 +113,8 @@ impl<'a> AStarExt<'a> {
     }
 
     fn enqueue_assignment(&mut self, node: &'a NodeId, child_costs: Vec<Cost>) {
-        // Like `ExtractionResult::node_sum_cost`.
-        let bottom_up_cost = self.egraph[node].cost + child_costs.iter().sum::<NotNan<f64>>();
-        self.set_node_cost(node, bottom_up_cost);
+        let bottom_up_cost = node_cost(self.egraph, node, &child_costs);
+        self.node_state.insert(node, NodeState::Cost(bottom_up_cost));
         let eqc = self.egraph.nid_to_cid(node);
         let top_down_cost = self.parent_cost[eqc];
         let merit = top_down_cost + bottom_up_cost;
@@ -144,16 +169,6 @@ impl<'a> AStarExt<'a> {
         }
     }
 
-    // TODO: If we want to optimize, we can immediately compute the sum here as we know that the 
-    //       cost function also just adds the child costs together.
-    fn node_child_costs(&self, node: &'a NodeId) -> Vec<Cost> {
-        let node = &self.egraph[node];
-        node.children.iter().map(|child| {
-            let eqc = self.egraph.nid_to_cid(child);
-            self.eqc_min_cost.get(eqc).copied().unwrap()
-        }).collect()
-    }
-
     fn run(&mut self, target: &'a ClassId) {
         let zero = NotNan::new(0.0).unwrap();
         self.enqueue_visit_eqc(target, zero);
@@ -163,19 +178,27 @@ impl<'a> AStarExt<'a> {
                 Action::Assign(eqc, node) => {
                     if self.eqc_has_min(eqc) { continue }
                     self.set_eqc_min(eqc, node);
-                    let Some(parents) = self.eqc_parents.get(eqc) else { break };
-                    let parents = parents.clone();
-                    for parent in parents {
-                        match self.node_delay.get(parent).copied() {
-                            Some(1) => {
-                                self.erase_node_delay(parent);
-                                let child_costs = self.node_child_costs(parent);
-                                self.enqueue_assignment(parent, child_costs);
+
+                    let egraph = self.egraph;
+                    // The remaining fields are destructured, so that the borrow checker sees the
+                    // accesses to the maps below as disjoint. This allows `node_state` to be updated
+                    // in place, while the other maps are being read.
+                    let Self { queue, node_state, eqc_parents, parent_cost, eqc_min_cost, .. } = self;
+
+                    let Some(parents) = eqc_parents.get(eqc) else { break };
+                    for parent in parents.iter().copied() {
+                        let state = node_state.get_mut(parent).expect(BAD_PATH);
+                        match state {
+                            NodeState::Delay(1) => {
+                                let child_costs = node_child_costs(egraph, eqc_min_cost, parent);
+                                let bottom_up_cost = node_cost(egraph, parent, &child_costs);
+                                let parent_eqc = egraph.nid_to_cid(parent);
+                                let merit = parent_cost[parent_eqc] + bottom_up_cost;
+                                *state = NodeState::Cost(bottom_up_cost);
+                                queue.insert(Action::Assign(parent_eqc, parent), merit);
                             },
-                            Some(n) if n > 1 => {
-                                self.set_node_delay(parent, n - 1)
-                            },
-                            _ => panic!("Reached bad path in `AStarExt::run`."),
+                            NodeState::Delay(delay) if *delay > 1 => *delay -= 1,
+                            _ => panic!("{}", BAD_PATH)
                         }
                     }
                 }
@@ -183,6 +206,8 @@ impl<'a> AStarExt<'a> {
         }
     }
 }
+
+const BAD_PATH: &str = "Reached bad path in `AStarExt::run`.";
 
 pub struct AStarExtractor;
 
