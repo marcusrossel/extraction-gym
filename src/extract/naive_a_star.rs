@@ -1,3 +1,5 @@
+use std::mem;
+
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::*;
@@ -23,24 +25,51 @@ impl NodeState {
     }
 }
 
+// The state associated with an e-class over the course of the extraction. As an e-class' parents
+// are only needed at the very moment at which it is assigned a minimal e-node, the two states are
+// mutually exclusive and can therefore share a single map.
+enum EqcState<'a> {
+    // The e-nodes which have this e-class as a child. This is the state of every e-class during the
+    // top-down phase.
+    Parents(Vec<&'a NodeId>),
+    // The bottom-up cost of the e-class' minimal e-node, which is set during the bottom-up phase.
+    Cost(Cost)
+}
+
+impl<'a> EqcState<'a> {
+    fn cost(&self) -> Cost {
+        match self {
+            EqcState::Cost(cost) => *cost,
+            EqcState::Parents(_) => panic!("Accessed the cost of an unresolved e-class.")
+        }
+    }
+
+    fn parents_mut(&mut self) -> &mut Vec<&'a NodeId> {
+        match self {
+            EqcState::Parents(parents) => parents,
+            EqcState::Cost(_)          => panic!("Accessed the parents of a resolved e-class.")
+        }
+    }
+}
+
 struct NaiveAStarTopDownExtractor<'a> {
-    egraph:      &'a EGraph,
-    eqc_parents: FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
-    node_state:  FxHashMap<&'a NodeId, NodeState>,
-    parent_cost: FxHashMap<&'a ClassId, Cost>,
-    queue:       PrioQueue<&'a NodeId, Cost>,
-    leaves:      PrioQueue<&'a NodeId, Cost>
+    egraph:     &'a EGraph,
+    eqc_state:  FxHashMap<&'a ClassId, EqcState<'a>>,
+    node_state: FxHashMap<&'a NodeId, NodeState>,
+    td_cost:    FxHashMap<&'a ClassId, Cost>,
+    queue:      PrioQueue<&'a NodeId, Cost>,
+    leaves:     PrioQueue<&'a NodeId, Cost>
 }
 
 impl<'a> NaiveAStarTopDownExtractor<'a> {
     fn new(egraph: &'a EGraph) -> NaiveAStarTopDownExtractor<'a> {
         NaiveAStarTopDownExtractor {
             egraph,
-            eqc_parents: Default::default(),
-            node_state:  Default::default(),
-            parent_cost: Default::default(),
-            queue:       PrioQueue::new(),
-            leaves:      PrioQueue::new()
+            eqc_state:  Default::default(),
+            node_state: Default::default(),
+            td_cost:    Default::default(),
+            queue:      PrioQueue::new(),
+            leaves:     PrioQueue::new()
         }
     }
 
@@ -48,44 +77,45 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         self.node_state.insert(node, NodeState::Delay(delay));
     }
 
-    fn set_parent_cost(&mut self, eqc: &'a ClassId, cost: Cost) {
-        self.parent_cost.insert(eqc, cost);
+    fn set_td_cost(&mut self, eqc: &'a ClassId, cost: Cost) {
+        self.td_cost.insert(eqc, cost);
     }
 
     // Determines whether a given e-class has already been enqueued via `enqueue_eqc`. As
-    // `enqueue_eqc` always sets `parent_cost` for the given e-class, we use membership in this map
+    // `enqueue_eqc` always sets `td_cost` for the given e-class, we use membership in this map
     // as the indicator.
     fn is_enqueued_eqc(&self, eqc: &ClassId) -> bool {
-        self.parent_cost.contains_key(eqc)
+        self.td_cost.contains_key(eqc)
     }
 
     fn add_eqc_parent(&mut self, eqc: &'a ClassId, node: &'a NodeId) {
-        self.eqc_parents.entry(eqc).or_insert_with(Vec::new).push(node);
+        let state = self.eqc_state.entry(eqc).or_insert_with(|| EqcState::Parents(Vec::new()));
+        state.parents_mut().push(node);
     }
 
     fn dequeue(&mut self) -> Option<&'a NodeId> {
         self.queue.pop().map(|(node, _)| node)
     }
 
-    fn enqueue_node(&mut self, node: &'a NodeId, parent_cost: Cost) {
-        let td_cost = parent_cost + self.egraph[node].cost;
+    fn enqueue_node(&mut self, node: &'a NodeId, td_cost: Cost) {
+        let td_cost = td_cost + self.egraph[node].cost;
         self.queue.insert(node, td_cost);
     }
 
-    fn enqueue_eqc(&mut self, eqc: &'a ClassId, parent_cost: Cost) {
+    fn enqueue_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost) {
         if !self.is_enqueued_eqc(eqc) {
             let egraph = self.egraph;
             for node in &egraph.classes()[eqc].nodes {
-                self.enqueue_node(node, parent_cost);
+                self.enqueue_node(node, td_cost);
             }
-            self.set_parent_cost(eqc, parent_cost);
+            self.set_td_cost(eqc, td_cost);
         }
     }
 
     fn add_leaf(&mut self, node: &'a NodeId) {
         let eqc = self.egraph.nid_to_cid(node);
         let bottom_up_cost = self.egraph[node].cost;
-        let top_down_cost = self.parent_cost[eqc];
+        let top_down_cost = self.td_cost[eqc];
         let merit = top_down_cost + bottom_up_cost;
         self.node_state.insert(node, NodeState::Cost(bottom_up_cost));
         self.leaves.insert(node, merit);
@@ -100,7 +130,7 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
             } else {
                 let egraph = self.egraph;
                 let eqc = egraph.nid_to_cid(node);
-                let td_cost = self.parent_cost[eqc] + self.egraph[node].cost;
+                let td_cost = self.td_cost[eqc] + self.egraph[node].cost;
                 let mut unique_child_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
 
                 for child in &egraph[node].children {
@@ -118,23 +148,22 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
 }
 
 struct NaiveAStarBottomUpExtractor<'a> {
-    egraph:       &'a EGraph,
-    eqc_parents:  FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
-    node_state:   FxHashMap<&'a NodeId, NodeState>,
-    parent_cost:  FxHashMap<&'a ClassId, Cost>,
-    queue:        PrioQueue<&'a NodeId, Cost>,
-    eqc_min_cost: FxHashMap<&'a ClassId, Cost>,
-    eqc_min:      IndexMap<ClassId, NodeId>
+    egraph:     &'a EGraph,
+    eqc_state:  FxHashMap<&'a ClassId, EqcState<'a>>,
+    node_state: FxHashMap<&'a NodeId, NodeState>,
+    td_cost:    FxHashMap<&'a ClassId, Cost>,
+    queue:      PrioQueue<&'a NodeId, Cost>,
+    eqc_min:    IndexMap<ClassId, NodeId>
 }
 
 // Like `ExtractionResult::node_sum_cost`. This is a free function, so that it can be called while
 // `NaiveAStarBottomUpExtractor::node_state` is mutably borrowed.
 fn min_node_cost<'a>(
-    egraph: &'a EGraph, eqc_min_cost: &FxHashMap<&'a ClassId, Cost>, node: &'a NodeId
+    egraph: &'a EGraph, eqc_state: &FxHashMap<&'a ClassId, EqcState<'a>>, node: &'a NodeId
 ) -> Cost {
     let node = &egraph[node];
     let total_child_cost: Cost = node.children.iter().map(|child| {
-        eqc_min_cost[egraph.nid_to_cid(child)]
+        eqc_state[egraph.nid_to_cid(child)].cost()
     }).sum();
     node.cost + total_child_cost
 }
@@ -142,13 +171,12 @@ fn min_node_cost<'a>(
 impl<'a> NaiveAStarBottomUpExtractor<'a> {
     fn init(top_down: NaiveAStarTopDownExtractor<'a>) -> NaiveAStarBottomUpExtractor<'a> {
         NaiveAStarBottomUpExtractor {
-            egraph:       top_down.egraph,
-            eqc_parents:  top_down.eqc_parents,
-            node_state:   top_down.node_state,
-            parent_cost:  top_down.parent_cost,
-            queue:        top_down.leaves,
-            eqc_min_cost: Default::default(),
-            eqc_min:      IndexMap::new()
+            egraph:     top_down.egraph,
+            eqc_state:  top_down.eqc_state,
+            node_state: top_down.node_state,
+            td_cost:    top_down.td_cost,
+            queue:      top_down.leaves,
+            eqc_min:    IndexMap::new()
         }
     }
 
@@ -157,24 +185,31 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         // The remaining fields are destructured, so that the borrow checker sees the accesses to the
         // maps below as disjoint. This allows `node_state` to be updated in place, while the other
         // maps are being read.
-        let Self { eqc_parents, node_state, parent_cost, queue, eqc_min_cost, eqc_min, .. } = self;
+        let Self { eqc_state, node_state, td_cost, queue, eqc_min, .. } = self;
 
         while let Some((node, _)) = queue.pop() {
             let eqc = egraph.nid_to_cid(node);
-            // Determines whether a given e-class has already been assigned a minimal e-node. As
-            // `eqc_min_cost` and `eqc_min` are always set in tandem, we use membership in the
-            // former as the indicator, as it uses the faster hasher.
-            if eqc_min_cost.contains_key(eqc) { continue }
-            eqc_min_cost.insert(eqc, node_state[node].cost());
+            let Some(state) = eqc_state.get_mut(eqc) else {
+                // An e-class without parents can only be the target e-class, so we are done.
+                eqc_min.insert(eqc.clone(), node.clone());
+                break
+            };
+            // Taking the parents out of the state is what marks the e-class as resolved, so an
+            // e-class which is already in the `Cost` state has been assigned a minimal e-node
+            // before. Thus, no separate map is needed to detect this.
+            let parents = match state {
+                EqcState::Cost(_)          => continue,
+                EqcState::Parents(parents) => mem::take(parents)
+            };
+            *state = EqcState::Cost(node_state[node].cost());
             eqc_min.insert(eqc.clone(), node.clone());
 
-            let Some(parents) = eqc_parents.get(eqc) else { break };
-            for parent in parents.iter().copied() {
+            for parent in parents {
                 let state = node_state.get_mut(parent).expect(BAD_PATH);
                 match state {
                     NodeState::Delay(1) => {
-                        let bottom_up_cost = min_node_cost(egraph, eqc_min_cost, parent);
-                        let top_down_cost = parent_cost[egraph.nid_to_cid(parent)];
+                        let bottom_up_cost = min_node_cost(egraph, eqc_state, parent);
+                        let top_down_cost = td_cost[egraph.nid_to_cid(parent)];
                         *state = NodeState::Cost(bottom_up_cost);
                         queue.insert(parent, top_down_cost + bottom_up_cost);
                     },
