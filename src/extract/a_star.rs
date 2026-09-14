@@ -1,3 +1,5 @@
+use std::mem;
+
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::*;
@@ -27,14 +29,41 @@ impl NodeState {
     }
 }
 
+// The state associated with an e-class over the course of the extraction. As an e-class' parents
+// are only needed at the very moment at which it is assigned a minimal e-node, the two states are
+// mutually exclusive and can therefore share a single map.
+enum EqcState<'a> {
+    // The e-nodes which have this e-class as a child, which are accumulated while the e-class is
+    // unresolved.
+    Parents(Vec<&'a NodeId>),
+    // The bottom-up cost of the e-class' minimal e-node, which is set when the e-class is assigned
+    // one.
+    Cost(Cost)
+}
+
+impl<'a> EqcState<'a> {
+    fn cost(&self) -> Cost {
+        match self {
+            EqcState::Cost(cost) => *cost,
+            EqcState::Parents(_) => panic!("Accessed the cost of an unresolved e-class.")
+        }
+    }
+
+    fn parents_mut(&mut self) -> &mut Vec<&'a NodeId> {
+        match self {
+            EqcState::Parents(parents) => parents,
+            EqcState::Cost(_)          => panic!("Accessed the parents of a resolved e-class.")
+        }
+    }
+}
+
 struct AStarExt<'a> {
-    egraph:       &'a EGraph,
-    queue:        PrioQueue<Action<'a>, Cost>,
-    node_state:   FxHashMap<&'a NodeId, NodeState>,
-    eqc_parents:  FxHashMap<&'a ClassId, Vec<&'a NodeId>>,
-    parent_cost:  FxHashMap<&'a ClassId, Cost>,
-    eqc_min_cost: FxHashMap<&'a ClassId, Cost>,
-    eqc_min:      IndexMap<ClassId, NodeId>
+    egraph:     &'a EGraph,
+    queue:      PrioQueue<Action<'a>, Cost>,
+    node_state: FxHashMap<&'a NodeId, NodeState>,
+    eqc_state:  FxHashMap<&'a ClassId, EqcState<'a>>,
+    td_cost:    FxHashMap<&'a ClassId, Cost>,
+    eqc_min:    IndexMap<ClassId, NodeId>
 }
 
 // Like `ExtractionResult::node_sum_cost`.
@@ -46,10 +75,10 @@ fn node_cost(egraph: &EGraph, node: &NodeId, child_costs: &[Cost]) -> Cost {
 // resolved. This is a free function, so that it can be called while `AStarExt::node_state` is
 // mutably borrowed.
 fn node_child_costs<'a>(
-    egraph: &'a EGraph, eqc_min_cost: &FxHashMap<&'a ClassId, Cost>, node: &'a NodeId
+    egraph: &'a EGraph, eqc_state: &FxHashMap<&'a ClassId, EqcState<'a>>, node: &'a NodeId
 ) -> Vec<Cost> {
     egraph[node].children.iter().map(|child| {
-        eqc_min_cost[egraph.nid_to_cid(child)]
+        eqc_state[egraph.nid_to_cid(child)].cost()
     }).collect()
 }
 
@@ -57,45 +86,40 @@ impl<'a> AStarExt<'a> {
     fn new(egraph: &'a EGraph) -> AStarExt<'a> {
         AStarExt {
             egraph,
-            queue:        PrioQueue::new(),
-            node_state:   Default::default(),
-            eqc_parents:  Default::default(),
-            parent_cost:  Default::default(),
-            eqc_min_cost: Default::default(),
-            eqc_min:      Default::default()
+            queue:      PrioQueue::new(),
+            node_state: Default::default(),
+            eqc_state:  Default::default(),
+            td_cost:    Default::default(),
+            eqc_min:    Default::default()
         }
     }
 
-    // Determines whether a given e-class has already been assigned a minimal e-node. As
-    // `set_eqc_min` always sets `eqc_min_cost` and `eqc_min` in tandem, we use membership in the
-    // former as the indicator, as it uses the faster hasher.
-    fn eqc_has_min(&self, eqc: &ClassId) -> bool {
-        self.eqc_min_cost.contains_key(eqc)
-    }
-
-    fn set_eqc_min(&mut self, eqc: &'a ClassId, node: &'a NodeId) {
-        let cost = self.node_state[node].cost();
-        self.eqc_min_cost.insert(eqc, cost);
-        self.eqc_min.insert(eqc.clone(), node.clone());
+    // The bottom-up cost of the e-class' minimal e-node, if it has already been assigned one.
+    fn eqc_min_cost(&self, eqc: &ClassId) -> Option<Cost> {
+        match self.eqc_state.get(eqc)? {
+            EqcState::Cost(cost) => Some(*cost),
+            EqcState::Parents(_) => None
+        }
     }
 
     fn set_node_delay(&mut self, node: &'a NodeId, delay: usize) {
         self.node_state.insert(node, NodeState::Delay(delay));
     }
 
-    fn set_parent_cost(&mut self, eqc: &'a ClassId, cost: Cost) {
-        self.parent_cost.insert(eqc, cost);
+    fn set_td_cost(&mut self, eqc: &'a ClassId, cost: Cost) {
+        self.td_cost.insert(eqc, cost);
     }
 
     // Determines whether a given e-class has already been enqueued via `enqueue_visit_eqc`. As
-    // `enqueue_visit_eqc` always sets `parent_cost` for the given e-class, we use membership in
+    // `enqueue_visit_eqc` always sets `td_cost` for the given e-class, we use membership in
     // this map as the indicator.
     fn is_enqueued_eqc(&self, eqc: &ClassId) -> bool {
-        self.parent_cost.contains_key(eqc)
+        self.td_cost.contains_key(eqc)
     }
 
     fn add_eqc_parent(&mut self, eqc: &'a ClassId, node: &'a NodeId) {
-        self.eqc_parents.entry(eqc).or_insert_with(Vec::new).push(node);
+        let state = self.eqc_state.entry(eqc).or_insert_with(|| EqcState::Parents(Vec::new()));
+        state.parents_mut().push(node);
     }
 
     fn dequeue(&mut self) -> Option<Action<'a>> {
@@ -106,8 +130,8 @@ impl<'a> AStarExt<'a> {
         self.queue.insert(action, merit);
     }
 
-    fn enqueue_visit_node(&mut self, node: &'a NodeId, parent_cost: Cost) {
-        let top_down_cost = parent_cost + self.egraph[node].cost;
+    fn enqueue_visit_node(&mut self, node: &'a NodeId, td_cost: Cost) {
+        let top_down_cost = td_cost + self.egraph[node].cost;
         let action = Action::Visit(node);
         self.enqueue(action, top_down_cost);
     }
@@ -116,19 +140,19 @@ impl<'a> AStarExt<'a> {
         let bottom_up_cost = node_cost(self.egraph, node, &child_costs);
         self.node_state.insert(node, NodeState::Cost(bottom_up_cost));
         let eqc = self.egraph.nid_to_cid(node);
-        let top_down_cost = self.parent_cost[eqc];
+        let top_down_cost = self.td_cost[eqc];
         let merit = top_down_cost + bottom_up_cost;
         let action = Action::Assign(eqc, node);
         self.enqueue(action, merit);
     }
 
-    fn enqueue_visit_eqc(&mut self, eqc: &'a ClassId, parent_cost: Cost) {
+    fn enqueue_visit_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost) {
         if !self.is_enqueued_eqc(eqc) {
             let egraph = self.egraph;
             for node in &egraph.classes()[eqc].nodes {
-                self.enqueue_visit_node(node, parent_cost);
+                self.enqueue_visit_node(node, td_cost);
             }
-            self.set_parent_cost(eqc, parent_cost);
+            self.set_td_cost(eqc, td_cost);
         }
     }
 
@@ -136,13 +160,13 @@ impl<'a> AStarExt<'a> {
         let mut child_costs = Vec::new();
         let mut delayed_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
         let eqc = self.egraph.nid_to_cid(node);
-        let td_cost = self.parent_cost[eqc] + self.egraph[node].cost;
+        let td_cost = self.td_cost[eqc] + self.egraph[node].cost;
         for child in &self.egraph[node].children {
             let child = self.egraph.nid_to_cid(child);
             // (1) If the child `eqc` is already resolved, remember its cost.
             // (2) If `eqc` is not resolved, set the parent-child relationship, and enqueue `eqc`
             //     (the node delay is set after the loop).
-            if let Some(&cost) = self.eqc_min_cost.get(child) {
+            if let Some(cost) = self.eqc_min_cost(child) {
                 child_costs.push(cost);
             } else if !delayed_eqcs.contains(child) {
                 // It is important that we do not register the same e-class as delayed multiple
@@ -176,24 +200,35 @@ impl<'a> AStarExt<'a> {
             match action {
                 Action::Visit(node) => self.visit_node(node),
                 Action::Assign(eqc, node) => {
-                    if self.eqc_has_min(eqc) { continue }
-                    self.set_eqc_min(eqc, node);
-
                     let egraph = self.egraph;
                     // The remaining fields are destructured, so that the borrow checker sees the
                     // accesses to the maps below as disjoint. This allows `node_state` to be updated
                     // in place, while the other maps are being read.
-                    let Self { queue, node_state, eqc_parents, parent_cost, eqc_min_cost, .. } = self;
+                    let Self { queue, node_state, eqc_state, td_cost, eqc_min, .. } = self;
 
-                    let Some(parents) = eqc_parents.get(eqc) else { break };
-                    for parent in parents.iter().copied() {
+                    let Some(state) = eqc_state.get_mut(eqc) else {
+                        // An e-class without parents can only be the target e-class, so we are done.
+                        eqc_min.insert(eqc.clone(), node.clone());
+                        break
+                    };
+                    // Taking the parents out of the state is what marks the e-class as resolved, so
+                    // an e-class which is already in the `Cost` state has been assigned a minimal
+                    // e-node before. Thus, no separate map is needed to detect this.
+                    let parents = match state {
+                        EqcState::Cost(_)          => continue,
+                        EqcState::Parents(parents) => mem::take(parents)
+                    };
+                    *state = EqcState::Cost(node_state[node].cost());
+                    eqc_min.insert(eqc.clone(), node.clone());
+
+                    for parent in parents {
                         let state = node_state.get_mut(parent).expect(BAD_PATH);
                         match state {
                             NodeState::Delay(1) => {
-                                let child_costs = node_child_costs(egraph, eqc_min_cost, parent);
+                                let child_costs = node_child_costs(egraph, eqc_state, parent);
                                 let bottom_up_cost = node_cost(egraph, parent, &child_costs);
                                 let parent_eqc = egraph.nid_to_cid(parent);
-                                let merit = parent_cost[parent_eqc] + bottom_up_cost;
+                                let merit = td_cost[parent_eqc] + bottom_up_cost;
                                 *state = NodeState::Cost(bottom_up_cost);
                                 queue.insert(Action::Assign(parent_eqc, parent), merit);
                             },
