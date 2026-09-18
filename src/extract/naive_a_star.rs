@@ -93,8 +93,8 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         state.parents_mut().push(node);
     }
 
-    fn dequeue(&mut self) -> Option<&'a NodeId> {
-        self.queue.pop().map(|(node, _)| node)
+    fn dequeue(&mut self) -> Option<(&'a NodeId, Cost)> {
+        self.queue.pop()
     }
 
     fn enqueue_node(&mut self, node: &'a NodeId, td_cost: Cost) {
@@ -121,27 +121,29 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         self.leaves.insert(node, merit);
     }
 
+    fn visit_children (&mut self, node: &'a NodeId, td_cost : Cost) {
+        let egraph = self.egraph;
+        let mut unique_child_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
+
+        for child in &egraph[node].children {
+            let eqc = egraph.nid_to_cid(child);
+            if unique_child_eqcs.insert(eqc) {
+                self.add_eqc_parent(eqc, node);
+                self.enqueue_eqc(eqc, td_cost);
+            }
+        }
+
+        self.set_node_delay(node, unique_child_eqcs.len());
+    }
+
     fn run(&mut self, target: &'a ClassId) {
         let zero = NotNan::new(0.0).unwrap();
         self.enqueue_eqc(target, zero);
-        while let Some(node) = self.dequeue() {
+        while let Some((node, td_cost)) = self.dequeue() {
             if self.egraph[node].children.is_empty() {
                 self.add_leaf(node);
             } else {
-                let egraph = self.egraph;
-                let eqc = egraph.nid_to_cid(node);
-                let td_cost = self.td_cost[eqc] + self.egraph[node].cost;
-                let mut unique_child_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
-
-                for child in &egraph[node].children {
-                    let eqc = egraph.nid_to_cid(child);
-                    if unique_child_eqcs.insert(eqc) {
-                        self.add_eqc_parent(eqc, node);
-                        self.enqueue_eqc(eqc, td_cost);
-                    }
-                }
-
-                self.set_node_delay(node, unique_child_eqcs.len());
+                self.visit_children(node, td_cost);
             }
         }
     }
@@ -180,18 +182,33 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         }
     }
 
+    // Accesses the fields directly (instead of via methods), so that the borrow checker sees the
+    // accesses to the maps as disjoint. This allows `node_state` to be updated in place, while the
+    // other maps are being read.
+    fn update_parents(&mut self, parents: Vec<&'a NodeId>) {
+        let egraph = self.egraph;
+        for parent in parents {
+            let state = self.node_state.get_mut(parent).expect(BAD_PATH);
+            match state {
+                NodeState::Delay(1) => {
+                    let bottom_up_cost = min_node_cost(egraph, &self.eqc_state, parent);
+                    let top_down_cost = self.td_cost[egraph.nid_to_cid(parent)];
+                    *state = NodeState::Cost(bottom_up_cost);
+                    self.queue.insert(parent, top_down_cost + bottom_up_cost);
+                },
+                NodeState::Delay(delay) if *delay > 1 => *delay -= 1,
+                _ => panic!("{}", BAD_PATH)
+            }
+        }
+    }
+
     fn run(&mut self) {
         let egraph = self.egraph;
-        // The remaining fields are destructured, so that the borrow checker sees the accesses to the
-        // maps below as disjoint. This allows `node_state` to be updated in place, while the other
-        // maps are being read.
-        let Self { eqc_state, node_state, td_cost, queue, eqc_min, .. } = self;
-
-        while let Some((node, _)) = queue.pop() {
+        while let Some((node, _)) = self.queue.pop() {
             let eqc = egraph.nid_to_cid(node);
-            let Some(state) = eqc_state.get_mut(eqc) else {
+            let Some(state) = self.eqc_state.get_mut(eqc) else {
                 // An e-class without parents can only be the target e-class, so we are done.
-                eqc_min.insert(eqc.clone(), node.clone());
+                self.eqc_min.insert(eqc.clone(), node.clone());
                 break
             };
             // Taking the parents out of the state is what marks the e-class as resolved, so an
@@ -201,22 +218,9 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
                 EqcState::Cost(_)          => continue,
                 EqcState::Parents(parents) => mem::take(parents)
             };
-            *state = EqcState::Cost(node_state[node].cost());
-            eqc_min.insert(eqc.clone(), node.clone());
-
-            for parent in parents {
-                let state = node_state.get_mut(parent).expect(BAD_PATH);
-                match state {
-                    NodeState::Delay(1) => {
-                        let bottom_up_cost = min_node_cost(egraph, eqc_state, parent);
-                        let top_down_cost = td_cost[egraph.nid_to_cid(parent)];
-                        *state = NodeState::Cost(bottom_up_cost);
-                        queue.insert(parent, top_down_cost + bottom_up_cost);
-                    },
-                    NodeState::Delay(delay) if *delay > 1 => *delay -= 1,
-                    _ => panic!("{}", BAD_PATH)
-                }
-            }
+            *state = EqcState::Cost(self.node_state[node].cost());
+            self.eqc_min.insert(eqc.clone(), node.clone());
+            self.update_parents(parents);
         }
     }
 }
