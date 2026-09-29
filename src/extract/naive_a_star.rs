@@ -104,11 +104,11 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
 
     fn enqueue_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost) {
         if !self.is_enqueued_eqc(eqc) {
+            self.set_td_cost(eqc, td_cost);
             let egraph = self.egraph;
             for node in &egraph.classes()[eqc].nodes {
                 self.enqueue_node(node, td_cost);
             }
-            self.set_td_cost(eqc, td_cost);
         }
     }
 
@@ -191,8 +191,14 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
             let state = self.node_state.get_mut(parent).expect(BAD_PATH);
             match state {
                 NodeState::Delay(1) => {
+                    // If the parent's e-class has already been resolved (by another of its
+                    // e-nodes), the parent cannot become its minimal e-node, so there's no need to
+                    // enqueue it. Its state then simply stays at `Delay(1)`, as it is never looked
+                    // at again.
+                    let parent_eqc = egraph.nid_to_cid(parent);
+                    if matches!(self.eqc_state.get(parent_eqc), Some(EqcState::Cost(_))) { continue }
                     let bottom_up_cost = min_node_cost(egraph, &self.eqc_state, parent);
-                    let top_down_cost = self.td_cost[egraph.nid_to_cid(parent)];
+                    let top_down_cost = self.td_cost[parent_eqc];
                     *state = NodeState::Cost(bottom_up_cost);
                     self.queue.insert(parent, top_down_cost + bottom_up_cost);
                 },
@@ -202,18 +208,21 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         }
     }
 
-    fn run(&mut self) {
+    fn run(&mut self, target: &ClassId) {
         let egraph = self.egraph;
         while let Some((node, _)) = self.queue.pop() {
             let eqc = egraph.nid_to_cid(node);
-            let Some(state) = self.eqc_state.get_mut(eqc) else {
-                // An e-class without parents can only be the target e-class, so we are done.
+            if eqc == target {
                 self.eqc_min.insert(eqc.clone(), node.clone());
                 break
-            };
+            }
+            // The only e-class which may not have a parent is the target, which we already handled
+            // above.
+            let state = self.eqc_state.get_mut(eqc).expect(BAD_PATH);
             // Taking the parents out of the state is what marks the e-class as resolved, so an
             // e-class which is already in the `Cost` state has been assigned a minimal e-node
-            // before. Thus, no separate map is needed to detect this.
+            // before. Thus, no separate map is needed to detect this. If the node's e-class is
+            // already resolved, there's nothing to do.
             let parents = match state {
                 EqcState::Cost(_)          => continue,
                 EqcState::Parents(parents) => mem::take(parents)
@@ -238,7 +247,7 @@ impl Extractor for NaiveAStarExtractor {
         let mut top_down = NaiveAStarTopDownExtractor::new(egraph);
         top_down.run(target);
         let mut bottom_up = NaiveAStarBottomUpExtractor::init(top_down);
-        bottom_up.run();
+        bottom_up.run(target);
         ExtractionResult { choices: bottom_up.eqc_min }
     }
 }
