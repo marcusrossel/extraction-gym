@@ -138,8 +138,14 @@ impl<'a> AStarExt<'a> {
         self.eqc_state.insert(eqc, EqcState { td_cost, status: EqcStatus::Parents(parents) });
         let egraph = self.egraph;
         for node in &egraph.classes()[eqc].nodes {
-            // Visiting a leaf would do nothing but enqueue its assignment-action, so we enqueue
-            // that directly and never enqueue a visit-action for a leaf in the first place.
+            // Visiting a leaf does nothing but enqueue its assignment-action, so we enqueue that
+            // directly and never enqueue a visit-action for a leaf in the first place. This is not
+            // just a shortcut, but needed for correctness: a visit-action is enqueued at the
+            // top-down cost through its e-node, which bounds the cost of every term through a
+            // *branch* e-node from below, but not through a leaf, whose margin may exceed its cost.
+            // A visit-action for such a leaf could come after the assignment-action of a costlier
+            // e-node of the same e-class, which would then be assigned instead. (With the additive
+            // cost used here, a leaf's margin is its cost, but other cost functions need not be.)
             if egraph[node].children.is_empty() {
                 self.enqueue_assignment(node, vec![]);
             } else {
@@ -230,10 +236,6 @@ impl<'a> AStarExt<'a> {
                     self.visit_node(node)
                 },
                 Action::Assign(eqc, node) => {
-                    if eqc == target {
-                        self.eqc_min.insert(eqc.clone(), node.clone());
-                        break
-                    }
                     // Every e-class whose visit has been enqueued has a state.
                     let state = self.eqc_state.get_mut(eqc).expect(BAD_PATH);
                     // Taking the parents out of the status is what marks the e-class as resolved,
@@ -246,6 +248,7 @@ impl<'a> AStarExt<'a> {
                     };
                     state.status = EqcStatus::Cost(self.node_state[node].cost());
                     self.eqc_min.insert(eqc.clone(), node.clone());
+                    if eqc == target { break }
                     self.update_parents(parents);
                 }
             }
