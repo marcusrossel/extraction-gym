@@ -102,14 +102,8 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         self.queue.insert(node, td_cost);
     }
 
-    fn enqueue_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost, parents: Vec<&'a NodeId>) {
-        self.eqc_state.insert(eqc, EqcState { td_cost, status: EqcStatus::Parents(parents) });
-        let egraph = self.egraph;
-        for node in &egraph.classes()[eqc].nodes {
-            self.enqueue_node(node, td_cost);
-        }
-    }
-
+    // Visits the given leaf: it records its (exact) bottom-up cost, and is added to `leaves` at its
+    // merit. This reads the top-down cost of the leaf's e-class, which must thus be reached already.
     fn add_leaf(&mut self, node: &'a NodeId) {
         let eqc = self.egraph.nid_to_cid(node);
         let bottom_up_cost = self.egraph[node].cost;
@@ -117,6 +111,25 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         let merit = top_down_cost + bottom_up_cost;
         self.node_state.insert(node, NodeState::Cost(bottom_up_cost));
         self.leaves.insert(node, merit);
+    }
+
+    // Reaches the given e-class at the given top-down cost: records it with that cost and the given
+    // parents, visits its leaves right away, and enqueues its branch e-nodes for a visit. This must
+    // only be called for an e-class which has not been reached before (see `add_eqc_parent`).
+    fn enqueue_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost, parents: Vec<&'a NodeId>) {
+        // This has to happen before the loop, as `add_leaf` reads the `td_cost` of `eqc`.
+        self.eqc_state.insert(eqc, EqcState { td_cost, status: EqcStatus::Parents(parents) });
+        let egraph = self.egraph;
+        for node in &egraph.classes()[eqc].nodes {
+            // Visiting a leaf does nothing but add it to `leaves`, so we do that directly instead
+            // of enqueuing it for a visit. This is the same as in the (interleaved) A* extraction,
+            // where it is also needed for correctness (see `AStarExt::enqueue_visit_eqc`).
+            if egraph[node].children.is_empty() {
+                self.add_leaf(node);
+            } else {
+                self.enqueue_node(node, td_cost);
+            }
+        }
     }
 
     fn visit_children (&mut self, node: &'a NodeId, td_cost : Cost) {
@@ -136,12 +149,9 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
     fn run(&mut self, target: &'a ClassId) {
         let zero = NotNan::new(0.0).unwrap();
         self.enqueue_eqc(target, zero, Vec::new());
+        // Only branch e-nodes are ever enqueued, as `enqueue_eqc` visits leaves right away.
         while let Some((node, td_cost)) = self.dequeue() {
-            if self.egraph[node].children.is_empty() {
-                self.add_leaf(node);
-            } else {
-                self.visit_children(node, td_cost);
-            }
+            self.visit_children(node, td_cost);
         }
     }
 }
@@ -207,10 +217,6 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
         let egraph = self.egraph;
         while let Some((node, _)) = self.queue.pop() {
             let eqc = egraph.nid_to_cid(node);
-            if eqc == target {
-                self.eqc_min.insert(eqc.clone(), node.clone());
-                break
-            }
             // Every e-class which was reached during the top-down phase has a state.
             let state = self.eqc_state.get_mut(eqc).expect(BAD_PATH);
             // Taking the parents out of the status is what marks the e-class as resolved, so an
@@ -223,6 +229,7 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
             };
             state.status = EqcStatus::Cost(self.node_state[node].cost());
             self.eqc_min.insert(eqc.clone(), node.clone());
+            if eqc == target { break }
             self.update_parents(parents);
         }
     }
