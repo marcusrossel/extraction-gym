@@ -14,9 +14,9 @@ pub mod greedy_dag;
 #[cfg(feature = "ilp-cbc")]
 pub mod ilp_cbc;
 pub mod prio_queue;
-pub mod reach_prio_queue;
-pub mod naive_a_star;
-pub mod a_star;
+pub mod uniform_cost_search;
+pub mod a_star_two_phase;
+pub mod a_star_interleaved;
 
 // Allowance for floating point values to be considered equal
 pub const EPSILON_ALLOWANCE: f64 = 0.00001;

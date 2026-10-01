@@ -17,14 +17,14 @@ enum NodeState {
     // The number of child e-classes which have not yet been assigned a minimal e-node.
     Delay(usize),
     // The bottom-up cost of the e-node, which is set when its assignment-action is enqueued.
-    Cost(Cost)
+    Resolved(Cost)
 }
 
 impl NodeState {
     fn cost(&self) -> Cost {
         match self {
-            NodeState::Cost(cost) => *cost,
-            NodeState::Delay(_)   => panic!("Accessed the cost of an unresolved e-node.")
+            NodeState::Resolved(cost) => *cost,
+            NodeState::Delay(_)       => panic!("Accessed the cost of an unresolved e-node.")
         }
     }
 }
@@ -37,21 +37,21 @@ enum EqcStatus<'a> {
     Parents(Vec<&'a NodeId>),
     // The bottom-up cost of the e-class' minimal e-node, which is set when the e-class is assigned
     // one.
-    Cost(Cost)
+    Resolved(Cost)
 }
 
 impl<'a> EqcStatus<'a> {
     fn cost(&self) -> Cost {
         match self {
-            EqcStatus::Cost(cost) => *cost,
-            EqcStatus::Parents(_) => panic!("Accessed the cost of an unresolved e-class.")
+            EqcStatus::Resolved(cost) => *cost,
+            EqcStatus::Parents(_)     => panic!("Accessed the cost of an unresolved e-class.")
         }
     }
 
     fn parents_mut(&mut self) -> &mut Vec<&'a NodeId> {
         match self {
             EqcStatus::Parents(parents) => parents,
-            EqcStatus::Cost(_)          => panic!("Accessed the parents of a resolved e-class.")
+            EqcStatus::Resolved(_)      => panic!("Accessed the parents of a resolved e-class.")
         }
     }
 }
@@ -65,7 +65,7 @@ struct EqcState<'a> {
     status:  EqcStatus<'a>
 }
 
-struct AStarExt<'a> {
+struct InterleavedAStarExt<'a> {
     egraph:     &'a EGraph,
     queue:      PrioQueue<Action<'a>, Cost>,
     node_state: FxHashMap<&'a NodeId, NodeState>,
@@ -79,7 +79,7 @@ fn node_cost(egraph: &EGraph, node: &NodeId, child_costs: &[Cost]) -> Cost {
 }
 
 // The costs of the minimal e-nodes of `node`'s child e-classes, which requires all of them to be
-// resolved. This is a free function, so that it can be called while `AStarExt::node_state` is
+// resolved. This is a free function, so that it can be called while `InterleavedAStarExt::node_state` is
 // mutably borrowed.
 fn node_child_costs<'a>(
     egraph: &'a EGraph, eqc_state: &FxHashMap<&'a ClassId, EqcState<'a>>, node: &'a NodeId
@@ -89,9 +89,9 @@ fn node_child_costs<'a>(
     }).collect()
 }
 
-impl<'a> AStarExt<'a> {
-    fn new(egraph: &'a EGraph) -> AStarExt<'a> {
-        AStarExt {
+impl<'a> InterleavedAStarExt<'a> {
+    fn new(egraph: &'a EGraph) -> InterleavedAStarExt<'a> {
+        InterleavedAStarExt {
             egraph,
             queue:      PrioQueue::new(),
             node_state: Default::default(),
@@ -102,7 +102,7 @@ impl<'a> AStarExt<'a> {
 
     // Determines whether the e-class has already been assigned a minimal e-node.
     fn is_resolved_eqc(&self, eqc: &ClassId) -> bool {
-        matches!(self.eqc_state.get(eqc), Some(EqcState { status: EqcStatus::Cost(_), .. }))
+        matches!(self.eqc_state.get(eqc), Some(EqcState { status: EqcStatus::Resolved(_), .. }))
     }
 
     fn set_node_delay(&mut self, node: &'a NodeId, delay: usize) {
@@ -125,7 +125,7 @@ impl<'a> AStarExt<'a> {
 
     fn enqueue_assignment(&mut self, node: &'a NodeId, child_costs: Vec<Cost>) {
         let bottom_up_cost = node_cost(self.egraph, node, &child_costs);
-        self.node_state.insert(node, NodeState::Cost(bottom_up_cost));
+        self.node_state.insert(node, NodeState::Resolved(bottom_up_cost));
         let eqc = self.egraph.nid_to_cid(node);
         let top_down_cost = self.eqc_state[eqc].td_cost;
         let merit = top_down_cost + bottom_up_cost;
@@ -167,7 +167,7 @@ impl<'a> AStarExt<'a> {
             match self.eqc_state.get_mut(child) {
                 // (1) If the child e-class is already resolved, there's nothing to do (its cost is
                 //     fetched after the loop, if needed).
-                Some(EqcState { status: EqcStatus::Cost(_), .. }) => continue,
+                Some(EqcState { status: EqcStatus::Resolved(_), .. }) => continue,
                 // (2) If it is not resolved, record `node` as its parent - reaching it with `node`
                 //     as its only parent, if it has not been reached yet - and register it as
                 //     delayed (the node delay is set after the loop).
@@ -205,12 +205,12 @@ impl<'a> AStarExt<'a> {
                     // `Delay(1)`, as it is never looked at again.
                     let parent_eqc = egraph.nid_to_cid(parent);
                     let parent_eqc_state = &eqc_state[parent_eqc];
-                    if let EqcStatus::Cost(_) = parent_eqc_state.status { continue }
+                    if let EqcStatus::Resolved(_) = parent_eqc_state.status { continue }
                     let top_down_cost = parent_eqc_state.td_cost;
                     let child_costs = node_child_costs(egraph, eqc_state, parent);
                     let bottom_up_cost = node_cost(egraph, parent, &child_costs);
                     let merit = top_down_cost + bottom_up_cost;
-                    *state = NodeState::Cost(bottom_up_cost);
+                    *state = NodeState::Resolved(bottom_up_cost);
                     queue.insert(Action::Assign(parent_eqc, parent), merit);
                 },
                 NodeState::Delay(delay) if *delay > 1 => *delay -= 1,
@@ -243,10 +243,10 @@ impl<'a> AStarExt<'a> {
                     // e-node before. Thus, no separate map is needed to detect this. If the node's
                     // e-class is already resolved, there's nothing to do.
                     let parents = match &mut state.status {
-                        EqcStatus::Cost(_)          => continue,
+                        EqcStatus::Resolved(_)      => continue,
                         EqcStatus::Parents(parents) => mem::take(parents)
                     };
-                    state.status = EqcStatus::Cost(self.node_state[node].cost());
+                    state.status = EqcStatus::Resolved(self.node_state[node].cost());
                     self.eqc_min.insert(eqc.clone(), node.clone());
                     if eqc == target { break }
                     self.update_parents(parents);
@@ -256,17 +256,17 @@ impl<'a> AStarExt<'a> {
     }
 }
 
-const BAD_PATH: &str = "Reached bad path in `AStarExt::run`.";
+const BAD_PATH: &str = "Reached bad path in `InterleavedAStarExt::run`.";
 
-pub struct AStarExtractor;
+pub struct InterleavedAStarExtractor;
 
-impl Extractor for AStarExtractor {
+impl Extractor for InterleavedAStarExtractor {
     fn extract(&self, egraph: &EGraph, roots: &[ClassId]) -> ExtractionResult {
         // TODO: We currently assume there to be only a single root class from which we extract. Add
         //       a field to the `ExtractorDetail` in `main.rs` where this can be declared.
         assert_eq!(roots.len(), 1);
         let target = &roots[0];
-        let mut ext = AStarExt::new(egraph);
+        let mut ext = InterleavedAStarExt::new(egraph);
         ext.run(target);
         ExtractionResult { choices: ext.eqc_min }
     }
