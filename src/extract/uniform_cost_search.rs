@@ -1,20 +1,11 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::VecDeque;
 
-/* This file was (almost) entirely generated with AI based off of the `prio-queue` extractor. */
-
 use super::*;
 
-/*
-This extractor follows the same approach as the `prio-queue` extractor, but only visits those
-e-nodes/e-classes reachable from `roots`. Accordingly, it is generally faster than `prio-queue`, but
-especially so when the sub-graph reachable from `roots` is significantly smaller than the entire
-e-graph.
-*/
+pub struct UniformCostSearchExtractor;
 
-pub struct ReachPrioQueueExtractor;
-
-impl Extractor for ReachPrioQueueExtractor {
+impl Extractor for UniformCostSearchExtractor {
     fn extract(&self, egraph: &EGraph, roots: &[ClassId]) -> ExtractionResult {
         let n2c = |nid: &NodeId| egraph.nid_to_cid(nid);
 
@@ -32,6 +23,7 @@ impl Extractor for ReachPrioQueueExtractor {
                 queue.push_back(root.clone());
             }
         }
+
         while let Some(cid) = queue.pop_front() {
             for node_id in &egraph.classes()[&cid].nodes {
                 let child_classes: FxHashSet<&ClassId> =

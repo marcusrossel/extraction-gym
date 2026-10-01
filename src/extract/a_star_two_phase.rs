@@ -13,14 +13,14 @@ enum NodeState {
     Delay(usize),
     // The bottom-up cost of the e-node. Leaves obtain this state during the top-down phase, all
     // other e-nodes when their delay reaches zero during the bottom-up phase.
-    Cost(Cost)
+    Resolved(Cost)
 }
 
 impl NodeState {
     fn cost(&self) -> Cost {
         match self {
-            NodeState::Cost(cost) => *cost,
-            NodeState::Delay(_)   => panic!("Accessed the cost of an unresolved e-node.")
+            NodeState::Resolved(cost) => *cost,
+            NodeState::Delay(_)       => panic!("Accessed the cost of an unresolved e-node.")
         }
     }
 }
@@ -32,21 +32,21 @@ enum EqcStatus<'a> {
     // the top-down phase.
     Parents(Vec<&'a NodeId>),
     // The bottom-up cost of the e-class' minimal e-node, which is set during the bottom-up phase.
-    Cost(Cost)
+    Resolved(Cost)
 }
 
 impl<'a> EqcStatus<'a> {
     fn cost(&self) -> Cost {
         match self {
-            EqcStatus::Cost(cost) => *cost,
-            EqcStatus::Parents(_) => panic!("Accessed the cost of an unresolved e-class.")
+            EqcStatus::Resolved(cost) => *cost,
+            EqcStatus::Parents(_)     => panic!("Accessed the cost of an unresolved e-class.")
         }
     }
 
     fn parents_mut(&mut self) -> &mut Vec<&'a NodeId> {
         match self {
             EqcStatus::Parents(parents) => parents,
-            EqcStatus::Cost(_)          => panic!("Accessed the parents of a resolved e-class.")
+            EqcStatus::Resolved(_)      => panic!("Accessed the parents of a resolved e-class.")
         }
     }
 }
@@ -60,7 +60,7 @@ struct EqcState<'a> {
     status:  EqcStatus<'a>
 }
 
-struct NaiveAStarTopDownExtractor<'a> {
+struct TwoPhaseAStarTopDownExtractor<'a> {
     egraph:     &'a EGraph,
     eqc_state:  FxHashMap<&'a ClassId, EqcState<'a>>,
     node_state: FxHashMap<&'a NodeId, NodeState>,
@@ -68,9 +68,9 @@ struct NaiveAStarTopDownExtractor<'a> {
     leaves:     PrioQueue<&'a NodeId, Cost>
 }
 
-impl<'a> NaiveAStarTopDownExtractor<'a> {
-    fn new(egraph: &'a EGraph) -> NaiveAStarTopDownExtractor<'a> {
-        NaiveAStarTopDownExtractor {
+impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
+    fn new(egraph: &'a EGraph) -> TwoPhaseAStarTopDownExtractor<'a> {
+        TwoPhaseAStarTopDownExtractor {
             egraph,
             eqc_state:  Default::default(),
             node_state: Default::default(),
@@ -109,7 +109,7 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
         let bottom_up_cost = self.egraph[node].cost;
         let top_down_cost = self.eqc_state[eqc].td_cost;
         let merit = top_down_cost + bottom_up_cost;
-        self.node_state.insert(node, NodeState::Cost(bottom_up_cost));
+        self.node_state.insert(node, NodeState::Resolved(bottom_up_cost));
         self.leaves.insert(node, merit);
     }
 
@@ -156,7 +156,7 @@ impl<'a> NaiveAStarTopDownExtractor<'a> {
     }
 }
 
-struct NaiveAStarBottomUpExtractor<'a> {
+struct TwoPhaseAStarBottomUpExtractor<'a> {
     egraph:     &'a EGraph,
     eqc_state:  FxHashMap<&'a ClassId, EqcState<'a>>,
     node_state: FxHashMap<&'a NodeId, NodeState>,
@@ -165,7 +165,7 @@ struct NaiveAStarBottomUpExtractor<'a> {
 }
 
 // Like `ExtractionResult::node_sum_cost`. This is a free function, so that it can be called while
-// `NaiveAStarBottomUpExtractor::node_state` is mutably borrowed.
+// `TwoPhaseAStarBottomUpExtractor::node_state` is mutably borrowed.
 fn min_node_cost<'a>(
     egraph: &'a EGraph, eqc_state: &FxHashMap<&'a ClassId, EqcState<'a>>, node: &'a NodeId
 ) -> Cost {
@@ -176,9 +176,9 @@ fn min_node_cost<'a>(
     node.cost + total_child_cost
 }
 
-impl<'a> NaiveAStarBottomUpExtractor<'a> {
-    fn init(top_down: NaiveAStarTopDownExtractor<'a>) -> NaiveAStarBottomUpExtractor<'a> {
-        NaiveAStarBottomUpExtractor {
+impl<'a> TwoPhaseAStarBottomUpExtractor<'a> {
+    fn init(top_down: TwoPhaseAStarTopDownExtractor<'a>) -> TwoPhaseAStarBottomUpExtractor<'a> {
+        TwoPhaseAStarBottomUpExtractor {
             egraph:     top_down.egraph,
             eqc_state:  top_down.eqc_state,
             node_state: top_down.node_state,
@@ -201,10 +201,10 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
                     // enqueue it. Its state then simply stays at `Delay(1)`, as it is never looked
                     // at again.
                     let parent_eqc_state = &self.eqc_state[egraph.nid_to_cid(parent)];
-                    if let EqcStatus::Cost(_) = parent_eqc_state.status { continue }
+                    if let EqcStatus::Resolved(_) = parent_eqc_state.status { continue }
                     let top_down_cost = parent_eqc_state.td_cost;
                     let bottom_up_cost = min_node_cost(egraph, &self.eqc_state, parent);
-                    *state = NodeState::Cost(bottom_up_cost);
+                    *state = NodeState::Resolved(bottom_up_cost);
                     self.queue.insert(parent, top_down_cost + bottom_up_cost);
                 },
                 NodeState::Delay(delay) if *delay > 1 => *delay -= 1,
@@ -224,10 +224,10 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
             // before. Thus, no separate map is needed to detect this. If the node's e-class is
             // already resolved, there's nothing to do.
             let parents = match &mut state.status {
-                EqcStatus::Cost(_)          => continue,
+                EqcStatus::Resolved(_)      => continue,
                 EqcStatus::Parents(parents) => mem::take(parents)
             };
-            state.status = EqcStatus::Cost(self.node_state[node].cost());
+            state.status = EqcStatus::Resolved(self.node_state[node].cost());
             self.eqc_min.insert(eqc.clone(), node.clone());
             if eqc == target { break }
             self.update_parents(parents);
@@ -235,19 +235,19 @@ impl<'a> NaiveAStarBottomUpExtractor<'a> {
     }
 }
 
-const BAD_PATH: &str = "Reached bad path in `NaiveAStarBottomUpExtractor::run`.";
+const BAD_PATH: &str = "Reached bad path in `TwoPhaseAStarBottomUpExtractor::run`.";
 
-pub struct NaiveAStarExtractor;
+pub struct TwoPhaseAStarExtractor;
 
-impl Extractor for NaiveAStarExtractor {
+impl Extractor for TwoPhaseAStarExtractor {
     fn extract(&self, egraph: &EGraph, roots: &[ClassId]) -> ExtractionResult {
         // TODO: We currently assume there to be only a single root class from which we extract. Add
         //       a field to the `ExtractorDetail` in `main.rs` where this can be declared.
         assert_eq!(roots.len(), 1);
         let target = &roots[0];
-        let mut top_down = NaiveAStarTopDownExtractor::new(egraph);
+        let mut top_down = TwoPhaseAStarTopDownExtractor::new(egraph);
         top_down.run(target);
-        let mut bottom_up = NaiveAStarBottomUpExtractor::init(top_down);
+        let mut bottom_up = TwoPhaseAStarBottomUpExtractor::init(top_down);
         bottom_up.run(target);
         ExtractionResult { choices: bottom_up.eqc_min }
     }
