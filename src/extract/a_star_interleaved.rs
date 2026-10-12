@@ -123,18 +123,17 @@ impl<'a> InterleavedAStarExt<'a> {
         self.enqueue(action, top_down_cost);
     }
 
-    fn enqueue_assignment(&mut self, node: &'a NodeId, child_costs: Vec<Cost>) {
+    fn enqueue_assignment(
+        &mut self, eqc: &'a ClassId, td_cost: Cost, node: &'a NodeId, child_costs: Vec<Cost>
+    ) {
         let bottom_up_cost = node_cost(self.egraph, node, &child_costs);
         self.node_state.insert(node, NodeState::Resolved(bottom_up_cost));
-        let eqc = self.egraph.nid_to_cid(node);
-        let top_down_cost = self.eqc_state[eqc].td_cost;
-        let merit = top_down_cost + bottom_up_cost;
+        let merit = td_cost + bottom_up_cost;
         let action = Action::Assign(eqc, node);
         self.enqueue(action, merit);
     }
 
     fn enqueue_visit_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost, parents: Vec<&'a NodeId>) {
-        // This has to happen before the loop, as `enqueue_assignment` reads the `td_cost` of `eqc`.
         self.eqc_state.insert(eqc, EqcState { td_cost, status: EqcStatus::Parents(parents) });
         let egraph = self.egraph;
         for node in &egraph.classes()[eqc].nodes {
@@ -147,7 +146,7 @@ impl<'a> InterleavedAStarExt<'a> {
             // e-node of the same e-class, which would then be assigned instead. (With the additive
             // cost used here, a leaf's margin is its cost, but other cost functions need not be.)
             if egraph[node].children.is_empty() {
-                self.enqueue_assignment(node, vec![]);
+                self.enqueue_assignment(eqc, td_cost, node, vec![]);
             } else {
                 self.enqueue_visit_node(node, td_cost);
             }
@@ -158,7 +157,8 @@ impl<'a> InterleavedAStarExt<'a> {
         let egraph = self.egraph;
         let mut delayed_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
         let eqc = egraph.nid_to_cid(node);
-        let td_cost = self.eqc_state[eqc].td_cost + egraph[node].cost;
+        let td_cost = self.eqc_state[eqc].td_cost;
+        let node_td_cost = td_cost + egraph[node].cost;
         for child in &egraph[node].children {
             let child = egraph.nid_to_cid(child);
             // It is important that we do not register the same e-class as delayed multiple times,
@@ -172,7 +172,7 @@ impl<'a> InterleavedAStarExt<'a> {
                 //     as its only parent, if it has not been reached yet - and register it as
                 //     delayed (the node delay is set after the loop).
                 Some(state) => state.status.parents_mut().push(node),
-                None        => self.enqueue_visit_eqc(child, td_cost, vec![node])
+                None        => self.enqueue_visit_eqc(child, node_td_cost, vec![node])
             }
             delayed_eqcs.insert(child);
         }
@@ -180,7 +180,7 @@ impl<'a> InterleavedAStarExt<'a> {
             // If all of `node`'s children are resolved, we can add an assignment-action for it
             // immediately.
             let child_costs = node_child_costs(self.egraph, &self.eqc_state, node);
-            self.enqueue_assignment(node, child_costs);
+            self.enqueue_assignment(eqc, td_cost, node, child_costs);
         } else {
             self.set_node_delay(node, delayed_eqcs.len());
         }

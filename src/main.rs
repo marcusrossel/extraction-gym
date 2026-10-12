@@ -57,25 +57,25 @@ fn extractors() -> IndexMap<&'static str, ExtractorDetail> {
             },
         ),
         (
-            "reach-prio-queue",
+            "uniform-cost-search",
             ExtractorDetail {
-                extractor: extract::reach_prio_queue::ReachPrioQueueExtractor.boxed(),
+                extractor: extract::uniform_cost_search::UniformCostSearchExtractor.boxed(),
                 optimal: Optimal::Tree,
                 use_for_bench: true,
             },
         ),
         (
-            "naive-a-star",
+            "a-star-two-phase",
             ExtractorDetail {
-                extractor: extract::naive_a_star::NaiveAStarExtractor.boxed(),
+                extractor: extract::a_star_two_phase::TwoPhaseAStarExtractor.boxed(),
                 optimal: Optimal::Tree,
                 use_for_bench: true,
             },
         ),
         (
-            "a-star",
+            "a-star-interleaved",
             ExtractorDetail {
-                extractor: extract::a_star::AStarExtractor.boxed(),
+                extractor: extract::a_star_interleaved::InterleavedAStarExtractor.boxed(),
                 optimal: Optimal::Tree,
                 use_for_bench: true,
             },

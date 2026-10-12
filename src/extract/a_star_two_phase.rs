@@ -102,13 +102,11 @@ impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
         self.queue.insert(node, td_cost);
     }
 
-    // Visits the given leaf: it records its (exact) bottom-up cost, and is added to `leaves` at its
-    // merit. This reads the top-down cost of the leaf's e-class, which must thus be reached already.
-    fn add_leaf(&mut self, node: &'a NodeId) {
-        let eqc = self.egraph.nid_to_cid(node);
+    // Visits the given leaf, whose e-class is reached at the given top-down cost: it records its
+    // (exact) bottom-up cost, and is added to `leaves` at its merit.
+    fn add_leaf(&mut self, node: &'a NodeId, td_cost: Cost) {
         let bottom_up_cost = self.egraph[node].cost;
-        let top_down_cost = self.eqc_state[eqc].td_cost;
-        let merit = top_down_cost + bottom_up_cost;
+        let merit = td_cost + bottom_up_cost;
         self.node_state.insert(node, NodeState::Resolved(bottom_up_cost));
         self.leaves.insert(node, merit);
     }
@@ -117,15 +115,15 @@ impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
     // parents, visits its leaves right away, and enqueues its branch e-nodes for a visit. This must
     // only be called for an e-class which has not been reached before (see `add_eqc_parent`).
     fn enqueue_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost, parents: Vec<&'a NodeId>) {
-        // This has to happen before the loop, as `add_leaf` reads the `td_cost` of `eqc`.
         self.eqc_state.insert(eqc, EqcState { td_cost, status: EqcStatus::Parents(parents) });
         let egraph = self.egraph;
         for node in &egraph.classes()[eqc].nodes {
             // Visiting a leaf does nothing but add it to `leaves`, so we do that directly instead
-            // of enqueuing it for a visit. This is the same as in the (interleaved) A* extraction,
-            // where it is also needed for correctness (see `AStarExt::enqueue_visit_eqc`).
+            // of enqueuing it for a visit. This is the same as in the interleaved A* extraction,
+            // where it is also needed for correctness (see
+            // `InterleavedAStarExt::enqueue_visit_eqc`).
             if egraph[node].children.is_empty() {
-                self.add_leaf(node);
+                self.add_leaf(node, td_cost);
             } else {
                 self.enqueue_node(node, td_cost);
             }
