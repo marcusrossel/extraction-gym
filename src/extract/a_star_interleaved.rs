@@ -4,10 +4,20 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::*;
 
+// The kinds of action scheduled by the queue: visiting an e-node, and assigning an e-node to its
+// e-class.
 #[derive(PartialEq, Eq)]
-enum Action<'a> {
-    Visit(&'a NodeId),
-    Assign(&'a ClassId, &'a NodeId)
+enum ActionTag {
+    Visit,
+    Assign
+}
+
+// An action scheduled by the queue. The e-class of its e-node is not stored, as it is looked up
+// when the action is dequeued (see `InterleavedAStarExt::run`).
+#[derive(PartialEq, Eq)]
+struct Action<'a> {
+    tag:  ActionTag,
+    node: &'a NodeId
 }
 
 // The state associated with an e-node over the course of the extraction. As an e-node's bottom-up
@@ -100,11 +110,6 @@ impl<'a> InterleavedAStarExt<'a> {
         }
     }
 
-    // Determines whether the e-class has already been assigned a minimal e-node.
-    fn is_resolved_eqc(&self, eqc: &ClassId) -> bool {
-        matches!(self.eqc_state.get(eqc), Some(EqcState { status: EqcStatus::Resolved(_), .. }))
-    }
-
     fn set_node_delay(&mut self, node: &'a NodeId, delay: usize) {
         self.node_state.insert(node, NodeState::Delay(delay));
     }
@@ -119,17 +124,15 @@ impl<'a> InterleavedAStarExt<'a> {
 
     fn enqueue_visit_node(&mut self, node: &'a NodeId, td_cost: Cost) {
         let top_down_cost = td_cost + self.egraph[node].cost;
-        let action = Action::Visit(node);
+        let action = Action { tag: ActionTag::Visit, node };
         self.enqueue(action, top_down_cost);
     }
 
-    fn enqueue_assignment(
-        &mut self, eqc: &'a ClassId, td_cost: Cost, node: &'a NodeId, child_costs: Vec<Cost>
-    ) {
+    fn enqueue_assignment(&mut self, node: &'a NodeId, td_cost: Cost, child_costs: Vec<Cost>) {
         let bottom_up_cost = node_cost(self.egraph, node, &child_costs);
         self.node_state.insert(node, NodeState::Resolved(bottom_up_cost));
         let merit = td_cost + bottom_up_cost;
-        let action = Action::Assign(eqc, node);
+        let action = Action { tag: ActionTag::Assign, node };
         self.enqueue(action, merit);
     }
 
@@ -146,18 +149,17 @@ impl<'a> InterleavedAStarExt<'a> {
             // e-node of the same e-class, which would then be assigned instead. (With the additive
             // cost used here, a leaf's margin is its cost, but other cost functions need not be.)
             if egraph[node].children.is_empty() {
-                self.enqueue_assignment(eqc, td_cost, node, vec![]);
+                self.enqueue_assignment(node, td_cost, vec![]);
             } else {
                 self.enqueue_visit_node(node, td_cost);
             }
         }
     }
 
-    fn visit_node(&mut self, node: &'a NodeId) {
+    // Visits `node`, whose e-class is reached at the given top-down cost.
+    fn visit_node(&mut self, node: &'a NodeId, td_cost: Cost) {
         let egraph = self.egraph;
         let mut delayed_eqcs: FxHashSet<&'a ClassId> = FxHashSet::default();
-        let eqc = egraph.nid_to_cid(node);
-        let td_cost = self.eqc_state[eqc].td_cost;
         let node_td_cost = td_cost + egraph[node].cost;
         for child in &egraph[node].children {
             let child = egraph.nid_to_cid(child);
@@ -180,7 +182,7 @@ impl<'a> InterleavedAStarExt<'a> {
             // If all of `node`'s children are resolved, we can add an assignment-action for it
             // immediately.
             let child_costs = node_child_costs(self.egraph, &self.eqc_state, node);
-            self.enqueue_assignment(eqc, td_cost, node, child_costs);
+            self.enqueue_assignment(node, td_cost, child_costs);
         } else {
             self.set_node_delay(node, delayed_eqcs.len());
         }
@@ -203,15 +205,14 @@ impl<'a> InterleavedAStarExt<'a> {
                     // e-nodes), the parent cannot become its minimal e-node, so there's no need to
                     // enqueue an assignment-action for it. Its state then simply stays at
                     // `Delay(1)`, as it is never looked at again.
-                    let parent_eqc = egraph.nid_to_cid(parent);
-                    let parent_eqc_state = &eqc_state[parent_eqc];
+                    let parent_eqc_state = &eqc_state[egraph.nid_to_cid(parent)];
                     if let EqcStatus::Resolved(_) = parent_eqc_state.status { continue }
                     let top_down_cost = parent_eqc_state.td_cost;
                     let child_costs = node_child_costs(egraph, eqc_state, parent);
                     let bottom_up_cost = node_cost(egraph, parent, &child_costs);
                     let merit = top_down_cost + bottom_up_cost;
                     *state = NodeState::Resolved(bottom_up_cost);
-                    queue.insert(Action::Assign(parent_eqc, parent), merit);
+                    queue.insert(Action { tag: ActionTag::Assign, node: parent }, merit);
                 },
                 NodeState::Delay(delay) if *delay > 1 => *delay -= 1,
                 _ => panic!("{}", BAD_PATH)
@@ -220,32 +221,34 @@ impl<'a> InterleavedAStarExt<'a> {
     }
 
     fn run(&mut self, target: &'a ClassId) {
+        let egraph = self.egraph;
         let zero = NotNan::new(0.0).unwrap();
         self.enqueue_visit_eqc(target, zero, Vec::new());
-        while let Some(action) = self.dequeue() {
-            match action {
-                Action::Visit(node) => {
-                    // If `node`'s e-class has already been resolved (by another of its e-nodes),
-                    // `node` cannot become its minimal e-node, so there's no need to explore below
-                    // `node`. This does not affect which e-nodes get assigned: the minimality of an
-                    // assignment only depends on the visits of e-nodes of *unresolved* e-classes.
-                    // It does mean that `td_cost` is not necessarily the cost of the cheapest path
-                    // to an e-class, as that path may run through an e-node skipped here.
-                    if self.is_resolved_eqc(self.egraph.nid_to_cid(node)) { continue }
-                    // Only branch nodes get visit-actions (see `enqueue_visit_eqc`).
-                    self.visit_node(node)
+        while let Some(Action { tag, node }) = self.dequeue() {
+            let eqc = egraph.nid_to_cid(node);
+            // Every e-class with an e-node in the queue has been reached, and so has a state.
+            let state = self.eqc_state.get_mut(eqc).expect(BAD_PATH);
+            // If `node`'s e-class has already been resolved (by another of its e-nodes), `node`
+            // cannot become its minimal e-node, so there's nothing to do: neither to assign `node`,
+            // nor to explore below it. Skipping visits does not affect which e-nodes get assigned:
+            // the minimality of an assignment only depends on the visits of e-nodes of
+            // *unresolved* e-classes. It does mean that `td_cost` is not necessarily the cost of
+            // the cheapest path to an e-class, as that path may run through an e-node skipped
+            // here. Taking the parents out of the status is what marks the e-class as resolved, so
+            // an e-class which already has the `Resolved` status has been assigned a minimal e-node
+            // before. Thus, no separate map is needed to detect this.
+            let parents = match &mut state.status {
+                EqcStatus::Resolved(_)      => continue,
+                EqcStatus::Parents(parents) => parents
+            };
+            match tag {
+                // Only branch nodes get visit-actions (see `enqueue_visit_eqc`).
+                ActionTag::Visit => {
+                    let td_cost = state.td_cost;
+                    self.visit_node(node, td_cost);
                 },
-                Action::Assign(eqc, node) => {
-                    // Every e-class whose visit has been enqueued has a state.
-                    let state = self.eqc_state.get_mut(eqc).expect(BAD_PATH);
-                    // Taking the parents out of the status is what marks the e-class as resolved,
-                    // so an e-class which already has the `Cost` status has been assigned a minimal
-                    // e-node before. Thus, no separate map is needed to detect this. If the node's
-                    // e-class is already resolved, there's nothing to do.
-                    let parents = match &mut state.status {
-                        EqcStatus::Resolved(_)      => continue,
-                        EqcStatus::Parents(parents) => mem::take(parents)
-                    };
+                ActionTag::Assign => {
+                    let parents = mem::take(parents);
                     state.status = EqcStatus::Resolved(self.node_state[node].cost());
                     self.eqc_min.insert(eqc.clone(), node.clone());
                     if eqc == target { break }
