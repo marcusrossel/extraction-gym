@@ -1,44 +1,23 @@
 FEATURES ?=
-FLAGS=--release --features=$(FEATURES)
 SINGLE_ROOT ?=
+BENCH_ARGS ?=
 
-EXTRACTORS=$(shell cargo run -q $(FLAGS) -- --extractor=print)
+CARGO_FLAGS := --release $(if $(FEATURES),--features=$(FEATURES))
+BENCH_FLAGS := $(if $(FEATURES),--features=$(FEATURES)) $(if $(SINGLE_ROOT),--single-root) $(BENCH_ARGS)
 
-PROGRAM=target/release/extraction-gym
+.PHONY: all build bench test nits clean
 
-SRC=$(shell find . -name '.rs') Cargo.toml Cargo.lock
-DATA=$(shell find data -name '*.json')
-
-TARGETS=
-
-.PHONY: all
 all: test nits bench
 
-define run-extraction
-TARGETS += $(1:data/%=output/%)-$(2).json
-$(1:data/%=output/%)-$(2).json: $(1)
-	@mkdir -p $$(dir $$@)
-	$(PROGRAM) $$< --extractor=$(2) --out=$$@ $(if $(SINGLE_ROOT),--single-root)
-endef
+build:
+	cargo build $(CARGO_FLAGS)
 
-$(foreach ext,$(EXTRACTORS),\
-	$(foreach data,$(DATA),\
-		$(eval $(call run-extraction,$(data),$(ext)))\
-	)\
-)
+bench:
+	uv run scripts/bench.py $(BENCH_FLAGS)
 
-.PHONY: bench
-bench: scripts/plot.py $(TARGETS)
-	./$^
-
-$(PROGRAM): $(SRC)
-	cargo build $(FLAGS)
-
-.PHONY: test
 test:
 	cargo test --release
 
-.PHONY: nits
 nits:
 	@if ! cargo fmt --version >/dev/null 2>&1 || ! cargo clippy --version >/dev/null 2>&1; then \
 		if [ -z "$$IN_NIX_SHELL" ] && command -v rustup >/dev/null 2>&1; then \
@@ -47,5 +26,7 @@ nits:
 	fi
 	cargo fmt -- --check
 	cargo clean --doc
-
 	cargo clippy --tests
+
+clean:
+	rm -rf output
