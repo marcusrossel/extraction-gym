@@ -7,7 +7,6 @@ delegates to `scripts/benchmode.py` to run the benchmarks pinned to a single iso
 CPU and optionally plots the results with `scripts/plot.py`.
 """
 
-import argparse
 import json
 import os
 import subprocess
@@ -16,7 +15,9 @@ import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Annotated
 
+import tyro
 from tqdm import tqdm
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -53,7 +54,7 @@ def list_extractors() -> list[str]:
     return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
 
 
-def collect_data_files(paths: Sequence[str]) -> list[Path]:
+def collect_data_files(paths: Sequence[str | Path]) -> list[Path]:
     roots = [Path(p) for p in paths] if paths else [DATA_DIR]
     files: list[Path] = []
     for raw in roots:
@@ -108,65 +109,54 @@ def run_job(job: BenchJob, *, single_root: bool, warmup: int, runs: int) -> None
         chosen.replace(job.out_path)
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    parser.add_argument(
-        "-e",
-        "--extractors",
-        nargs="+",
-        metavar="EXT",
-        help="extractors to benchmark (default: all reported by --extractor=print)",
-    )
-    parser.add_argument(
-        "-d",
-        "--data",
-        nargs="+",
-        metavar="PATH",
-        help="data files or directories to benchmark (default: data/)",
-    )
-    parser.add_argument(
-        "-o",
-        "--out-dir",
-        type=Path,
-        default=OUTPUT_DIR,
-        help="output directory for JSON results (default: output/)",
-    )
-    parser.add_argument(
-        "--features", default="", help="comma-separated Cargo features to enable when building"
-    )
-    parser.add_argument(
-        "--single-root", action="store_true", help="pass --single-root to extraction-gym"
-    )
-    parser.add_argument(
-        "--runs",
-        type=int,
-        default=1,
-        help="measured runs per benchmark; median-time output is kept (default: 1)",
-    )
-    parser.add_argument(
-        "--warmup", type=int, default=0, help="unmeasured warmup runs per benchmark (default: 0)"
-    )
-    parser.add_argument(
-        "--no-build",
-        action="store_true",
-        help="skip `cargo build --release` and use existing binary",
-    )
-    parser.add_argument(
-        "--no-plot", action="store_true", help="do not run scripts/plot.py after benchmarking"
-    )
+@dataclass(frozen=True)
+class BenchArgs:
+    extractors: Annotated[tuple[str, ...], tyro.conf.arg(aliases=("-e",))] = ()
+    """Extractors to benchmark (default: all reported by --extractor=print)."""
 
-    args = parser.parse_args(argv)
-    if args.runs < 1:
-        parser.error("--runs must be >= 1")
-    if args.warmup < 0:
-        parser.error("--warmup must be >= 0")
-    return args
+    data: Annotated[tuple[Path, ...], tyro.conf.arg(aliases=("-d",))] = ()
+    """Data files or directories to benchmark (default: data/)."""
+
+    out_dir: Annotated[Path, tyro.conf.arg(aliases=("-o",))] = OUTPUT_DIR
+    """Output directory for JSON results."""
+
+    features: str = ""
+    """Comma-separated Cargo features to enable when building."""
+
+    single_root: bool = False
+    """Pass --single-root to extraction-gym."""
+
+    runs: int = 1
+    """Measured runs per benchmark; median-time output is kept."""
+
+    warmup: int = 0
+    """Unmeasured warmup runs per benchmark."""
+
+    build: bool = True
+    """Run `cargo build --release` before benchmarking."""
+
+    plot: bool = True
+    """Run scripts/plot.py after benchmarking."""
+
+    def to_cli_args(self, *, build: bool | None = None) -> list[str]:
+        argv: list[str] = []
+        if self.extractors:
+            argv.extend(["--extractors", *self.extractors])
+        if self.data:
+            argv.extend(["--data", *(str(p) for p in self.data)])
+        argv.extend(["--out-dir", str(self.out_dir)])
+        if self.features:
+            argv.extend(["--features", self.features])
+        argv.append("--single-root" if self.single_root else "--no-single-root")
+        argv.extend(["--runs", str(self.runs), "--warmup", str(self.warmup)])
+        do_build = self.build if build is None else build
+        argv.append("--build" if do_build else "--no-build")
+        argv.append("--plot" if self.plot else "--no-plot")
+        return argv
 
 
-def run_benchmarks(args: argparse.Namespace) -> None:
-    if not args.no_build:
+def run_benchmarks(args: BenchArgs) -> None:
+    if args.build:
         build_binary(args.features or None)
     if not BINARY_PATH.exists():
         sys.exit(f"error: binary not found at {BINARY_PATH} (run without --no-build)")
@@ -185,7 +175,7 @@ def run_benchmarks(args: argparse.Namespace) -> None:
     else:
         extractors = available
 
-    data_files = collect_data_files(args.data or [])
+    data_files = collect_data_files(args.data)
     if not data_files:
         sys.exit("error: no data JSON files found.")
 
@@ -221,14 +211,18 @@ def run_benchmarks(args: argparse.Namespace) -> None:
         print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)
 
-    if not args.no_plot and len(extractors) >= 2:
+    if args.plot and len(extractors) >= 2:
         out_files = [str(job.out_path) for job in jobs]
         subprocess.run([sys.executable, str(PLOT_SCRIPT), *out_files], cwd=REPO_ROOT, check=True)
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    raw_argv = list(sys.argv[1:] if argv is None else argv)
-    args = parse_args(raw_argv)
+def main(args: BenchArgs) -> None:
+    if args.runs < 1:
+        print("error: --runs must be >= 1", file=sys.stderr)
+        sys.exit(2)
+    if args.warmup < 0:
+        print("error: --warmup must be >= 0", file=sys.stderr)
+        sys.exit(2)
 
     if os.environ.get("BENCHMODE") != "1":
         if os.geteuid() == 0:
@@ -236,9 +230,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "error: do not invoke scripts/bench.py with sudo directly; "
                 "it calls sudo itself so compilation and output files stay user-owned."
             )
-        if not args.no_build:
+        if args.build:
             build_binary(args.features or None)
-        inner = [sys.executable, str(Path(__file__).resolve()), "--no-build", *raw_argv]
+        inner = [sys.executable, str(Path(__file__).resolve()), *args.to_cli_args(build=False)]
         proc = subprocess.run([sys.executable, str(BENCHMODE_SCRIPT), "--", *inner], check=False)
         sys.exit(proc.returncode)
 
@@ -246,4 +240,4 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(BenchArgs, description=__doc__))

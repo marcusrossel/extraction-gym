@@ -11,6 +11,7 @@ dependencies = [
     "polars>=2.1.0",
     "plotnine>=0.15.9",
     "tqdm>=4.70.1",
+    "tyro>=1.0.17",
 ]
 
 [dependency-groups]

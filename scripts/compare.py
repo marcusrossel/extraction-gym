@@ -2,21 +2,17 @@
 
 """Compare the speed of two extractors across all benchmarks.
 
-Usage:
-    python scripts/compare.py <extractor1> <extractor2>
-        [json_files...]
-        [--min-enodes N] [--min-enodes-pct P] [--min-eclasses N] [--min-eclasses-pct P]
-        [--sort benchmark|winner|speedup|e-nodes|e-nodes-pct|e-classes|e-classes-pct|<extractor>]
-
-If no json_files are given, all files in output/**/*.json are used.
+If no JSON files are given, all files in output/**/*.json are used.
 """
 
-import argparse
 import json
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
+
+import tyro
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 
@@ -93,7 +89,7 @@ def egraph_stats(
     total_enodes = sum(eclass_size.values())
 
     visited = set(roots)
-    queue= list(roots)
+    queue = list(roots)
     while queue:
         ec = queue.pop()
         for child_ec in eclass_children.get(ec, []):
@@ -275,54 +271,34 @@ def compare(
     print(f"Total: {total} benchmarks")
 
 
-def main(argv: Sequence[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    parser.add_argument("extractor1")
-    parser.add_argument("extractor2")
-    parser.add_argument("files", nargs="*")
-    parser.add_argument(
-        "--min-enodes",
-        type=int,
-        metavar="N",
-        help="only include benchmarks with at least N reachable e-nodes",
-    )
-    parser.add_argument(
-        "--min-enodes-pct",
-        type=float,
-        metavar="P",
-        help="only include benchmarks where at least P%% of e-nodes are reachable",
-    )
-    parser.add_argument(
-        "--min-eclasses",
-        type=int,
-        metavar="N",
-        help="only include benchmarks with at least N reachable e-classes",
-    )
-    parser.add_argument(
-        "--min-eclasses-pct",
-        type=float,
-        metavar="P",
-        help="only include benchmarks where at least P%% of e-classes are reachable",
-    )
-    parser.add_argument(
-        "--sort",
-        metavar="COL",
-        default="benchmark",
-        help="sort by: benchmark, winner, speedup, e-nodes, e-nodes-pct, e-classes, e-classes-pct, or an extractor name (default: benchmark)",
-    )
-    args = parser.parse_args(argv)
+@dataclass(frozen=True)
+class CompareArgs:
+    extractor1: tyro.conf.Positional[str]
+    """First extractor name."""
 
-    extractor1: str = args.extractor1
-    extractor2: str = args.extractor2
-    arg_files: list[str] = args.files
-    min_enodes: int | None = args.min_enodes
-    min_enodes_pct: float | None = args.min_enodes_pct
-    min_eclasses: int | None = args.min_eclasses
-    min_eclasses_pct: float | None = args.min_eclasses_pct
-    sort_by: str = args.sort
+    extractor2: tyro.conf.Positional[str]
+    """Second extractor name."""
 
+    files: tyro.conf.Positional[tuple[Path, ...]] = ()
+    """JSON result files to compare (default: output/**/*.json)."""
+
+    min_enodes: int | None = None
+    """Only include benchmarks with at least N reachable e-nodes."""
+
+    min_enodes_pct: float | None = None
+    """Only include benchmarks where at least P% of e-nodes are reachable."""
+
+    min_eclasses: int | None = None
+    """Only include benchmarks with at least N reachable e-classes."""
+
+    min_eclasses_pct: float | None = None
+    """Only include benchmarks where at least P% of e-classes are reachable."""
+
+    sort: str = "benchmark"
+    """Sort by: benchmark, winner, speedup, e-nodes, e-nodes-pct, e-classes, e-classes-pct, or an extractor name."""
+
+
+def main(args: CompareArgs) -> None:
     valid_sort: set[str] = {
         "benchmark",
         "winner",
@@ -331,14 +307,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         "e-nodes-pct",
         "e-classes",
         "e-classes-pct",
-        extractor1,
-        extractor2,
+        args.extractor1,
+        args.extractor2,
     }
-    if sort_by not in valid_sort:
-        parser.error(f"--sort must be one of: {', '.join(sorted(valid_sort))}")
+    if args.sort not in valid_sort:
+        print(f"error: --sort must be one of: {', '.join(sorted(valid_sort))}", file=sys.stderr)
+        sys.exit(2)
 
     files: list[Path] = (
-        [Path(f) for f in arg_files]
+        list(args.files)
         or list(Path("output").rglob("*.json"))
         or list((REPO_ROOT / "output").rglob("*.json"))
     )
@@ -349,15 +326,15 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     compare(
         entries,
-        extractor1,
-        extractor2,
-        min_enodes,
-        min_enodes_pct,
-        min_eclasses,
-        min_eclasses_pct,
-        sort_by,
+        args.extractor1,
+        args.extractor2,
+        args.min_enodes,
+        args.min_enodes_pct,
+        args.min_eclasses,
+        args.min_eclasses_pct,
+        args.sort,
     )
 
 
 if __name__ == "__main__":
-    main()
+    main(tyro.cli(CompareArgs, description=__doc__))
