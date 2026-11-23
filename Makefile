@@ -28,7 +28,7 @@ $(foreach ext,$(EXTRACTORS),\
 )
 
 .PHONY: bench
-bench: plot.py $(TARGETS)
+bench: scripts/plot.py $(TARGETS)
 	./$^
 
 $(PROGRAM): $(SRC)

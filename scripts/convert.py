@@ -1,8 +1,10 @@
-# a utility to convert the old, csv-like format to the new json format
+#!/usr/bin/env python3
 
-from collections import Counter
-import sys
+"""a utility to convert the old, csv-like format to the new json format"""
+
 import json
+import sys
+from collections import Counter
 
 
 def convert(f):

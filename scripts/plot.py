@@ -3,6 +3,9 @@ import glob
 import json
 import statistics
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def load_jsons(files):
@@ -16,9 +19,9 @@ def load_jsons(files):
                     j["extractor"] = data["extractor"]
                     j["json_path"] = file
                     js.append(j)
-        except Exception as e:
+        except Exception:
             print(f"Error loading {file}")
-            raise e
+            raise
     return js
 
 
@@ -43,23 +46,23 @@ def process(js, extractors):
                 print(name, " differs in tree cost: ", d[e1]["tree"], d[e2]["tree"]);
             if d[e1]["dag"] !=  d[e2]["dag"]:
                 print(name, " differs in dag cost: ", d[e1]["dag"], d[e2]["dag"]);
-                
+
             tree_ratio = d[e1]["tree"] / d[e2]["tree"]
             dag_ratio = d[e1]["dag"] / d[e2]["dag"]
             micros_ratio = max(1, d[e1]["micros"]) / max(1, d[e2]["micros"])
-            
+
             e1_cumulative += d[e1]["micros"];
             e2_cumulative += d[e2]["micros"];
-            
+
             summaries[name] = {
                 "tree": tree_ratio,
                 "dag": dag_ratio,
                 "micros": micros_ratio,
             }
-        except Exception as e:
+        except Exception:
             print(f"Error processing {name}")
-            raise e
- 
+            raise
+
     print(f"cumulative time for {e1}: {e1_cumulative/1000:.0f}ms")
     print(f"cumulative time for {e2}: {e2_cumulative/1000:.0f}ms")
 
@@ -101,11 +104,15 @@ if __name__ == "__main__":
     print(" ------- plotting ------- ")
     print(" ------------------------ ")
     print()
-    files = sys.argv[1:] or glob.glob("output/**/*.json", recursive=True)
+    files = (
+        sys.argv[1:]
+        or glob.glob("output/**/*.json", recursive=True)
+        or glob.glob(str(REPO_ROOT / "output" / "**" / "*.json"), recursive=True)
+    )
     js = load_jsons(files)
     print(f"Loaded {len(js)} jsons.")
 
-    extractors = sorted(set(j["extractor"] for j in js))
+    extractors = sorted({j["extractor"] for j in js})
 
     for i in range(len(extractors)):
         for j in range(i + 1, len(extractors)):

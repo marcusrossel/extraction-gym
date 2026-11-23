@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
+
 """Compare the speed of two extractors across all benchmarks.
 
 Usage:
-    python compare.py <extractor1> <extractor2> 
+    python scripts/compare.py <extractor1> <extractor2>
         [json_files...]
         [--min-enodes N] [--min-enodes-pct P] [--min-eclasses N] [--min-eclasses-pct P]
         [--sort benchmark|winner|speedup|e-nodes|e-nodes-pct|e-classes|e-classes-pct|<extractor>]
@@ -13,6 +14,9 @@ import argparse
 import glob
 import json
 import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def load_jsons(files):
@@ -29,14 +33,17 @@ def load_jsons(files):
                     "result_index": idx,
                     "micros": result["micros"],
                 })
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"Error loading {file}: {e}", file=sys.stderr)
     return entries
 
 
 def load_egraph(name):
     try:
-        with open(name) as f:
+        path = Path(name)
+        if not path.exists():
+            path = REPO_ROOT / name
+        with open(path) as f:
             nodes = json.load(f)["nodes"]
         # Pre-build index: eclass -> list of child eclasses (across all member nodes)
         eclass_children = {}
@@ -52,7 +59,7 @@ def load_egraph(name):
             ec = n["eclass"]
             eclass_size[ec] = eclass_size.get(ec, 0) + 1
         return eclass_children, eclass_size
-    except Exception:
+    except Exception:  # noqa: BLE001
         return None, None
 
 
@@ -204,7 +211,11 @@ if __name__ == "__main__":
     if args.sort not in valid_sort:
         parser.error(f"--sort must be one of: {', '.join(sorted(valid_sort))}")
 
-    files = args.files or glob.glob("output/**/*.json", recursive=True)
+    files = (
+        args.files
+        or glob.glob("output/**/*.json", recursive=True)
+        or glob.glob(str(REPO_ROOT / "output" / "**" / "*.json"), recursive=True)
+    )
     entries = load_jsons(files)
     if not entries:
         print("No data loaded.", file=sys.stderr)
