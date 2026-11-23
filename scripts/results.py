@@ -666,6 +666,71 @@ def speedup_vs_baseline_df(df: pl.DataFrame, baseline: str) -> pl.DataFrame:
     )
 
 
+def suite_extractor_summary_df(df: pl.DataFrame, baseline: str) -> pl.DataFrame:
+    """Aggregate per-(suite, extractor) runtime, speedup vs. `baseline`, and fastest share.
+
+    - `geomean_speedup` > 1 means faster than `baseline` (geomean of `base_micros / micros`).
+    - `total_runtime_ratio` < 1 means less cumulative suite time than `baseline` (`tot / base_tot`).
+    - `fastest_rate` is the % of benchmarks in the suite where the extractor achieved min runtime.
+    """
+    clamped = df.with_columns(
+        pl.max_horizontal(pl.col("micros"), pl.lit(1)).cast(pl.Float64).alias("_micros_c")
+    )
+    inst_best = clamped.group_by("name", "roots").agg(pl.col("micros").min().alias("_min_micros"))
+    base_inst = clamped.filter(pl.col("extractor") == baseline).select(
+        "name", "roots", pl.col("_micros_c").alias("_base_micros_c")
+    )
+    enriched = (
+        clamped.join(inst_best, on=["name", "roots"], how="inner")
+        .join(base_inst, on=["name", "roots"], how="left")
+        .with_columns(
+            (pl.col("micros") == pl.col("_min_micros")).alias("_is_fastest"),
+            (pl.col("_base_micros_c") / pl.col("_micros_c")).alias("_speedup_vs_base"),
+        )
+    )
+
+    suite_inst_counts = suite_counts_df(df).rename({"instances": "suite_instances"})
+    agg = enriched.group_by("suite", "extractor").agg(
+        pl.len().alias("instances"),
+        (pl.col("micros").sum() / 1_000.0).alias("total_ms"),
+        pl.col("micros").sum().alias("total_micros"),
+        pl.col("micros").median().alias("median_us"),
+        pl.col("_micros_c").log().mean().exp().alias("geomean_us"),
+        pl.col("_speedup_vs_base")
+        .filter(pl.col("_speedup_vs_base").is_not_null())
+        .log()
+        .mean()
+        .exp()
+        .alias("geomean_speedup"),
+        (100.0 * pl.col("_is_fastest").mean()).alias("fastest_rate"),
+    )
+
+    base_totals = agg.filter(pl.col("extractor") == baseline).select(
+        "suite",
+        pl.max_horizontal(pl.col("total_micros"), pl.lit(1))
+        .cast(pl.Float64)
+        .alias("_base_total_micros"),
+    )
+    return (
+        agg.join(base_totals, on="suite", how="left")
+        .join(suite_inst_counts, on="suite", how="left")
+        .with_columns(
+            (
+                pl.max_horizontal(pl.col("total_micros"), pl.lit(1)).cast(pl.Float64)
+                / pl.col("_base_total_micros")
+            ).alias("total_runtime_ratio"),
+            (
+                pl.col("suite")
+                + " (n="
+                + pl.col("suite_instances").map_elements(lambda n: f"{n:,}", return_dtype=pl.String)
+                + ")"
+            ).alias("suite_label"),
+        )
+        .drop("total_micros", "_base_total_micros")
+        .sort(["suite_instances", "suite", "extractor"], descending=[True, False, False])
+    )
+
+
 def cost_comparison_df(df: pl.DataFrame, baseline: str) -> pl.DataFrame:
     """Compare tree and DAG costs of each non-baseline extractor against `baseline`."""
     base_costs = df.filter(pl.col("extractor") == baseline).select(

@@ -16,6 +16,8 @@ from scripts.results import (
     extractor_summary_df,
     pair_feature_correlations_df,
     speedup_vs_baseline_df,
+    suite_counts_df,
+    suite_extractor_summary_df,
     top_outliers_df,
 )
 
@@ -78,49 +80,6 @@ def _resolve_extractor_order(df: pl.DataFrame, extractor_order: Sequence[str] | 
     return sorted(df["e1"].unique().to_list())
 
 
-def plot_cumulative_runtime(
-    df: pl.DataFrame, *, extractor_order: Sequence[str] | None = None
-) -> p9.ggplot:
-    """Stacked horizontal bar chart of cumulative runtime by extractor and suite."""
-    summary = extractor_summary_df(df)
-    order = list(extractor_order) if extractor_order is not None else summary["extractor"].to_list()
-
-    by_suite_ms = df.group_by("extractor", "suite").agg(
-        (pl.col("micros").sum() / 1_000.0).alias("total_ms")
-    )
-    totals_label = summary.with_columns(
-        pl.col("total_ms")
-        .map_elements(lambda v: f"{v:,.0f} ms", return_dtype=pl.String)
-        .alias("label")
-    )
-
-    raw_max = summary["total_ms"].max()
-    max_total_ms = float(raw_max) if isinstance(raw_max, int | float) else 0.0
-
-    return (
-        p9.ggplot(to_pd(by_suite_ms), p9.aes(x="extractor", y="total_ms", fill="suite"))
-        + p9.geom_col(width=0.72)
-        + p9.geom_text(
-            p9.aes(x="extractor", y="total_ms", label="label"),
-            data=to_pd(totals_label),
-            inherit_aes=False,
-            ha="left",
-            nudge_y=max(max_total_ms * 0.015, 1.0),
-            size=9,
-        )
-        + p9.scale_x_discrete(limits=list(reversed(order)))
-        + p9.coord_flip()
-        + p9.labs(
-            title="Cumulative Runtime by Extractor (Stacked by Suite)",
-            subtitle="Lower is faster; sorted by total runtime across all benchmarks",
-            x="",
-            y="Cumulative Time (ms)",
-            fill="Suite",
-        )
-        + p9.theme(figure_size=(10, max(4.0, 0.55 * len(order) + 1.5)))
-    )
-
-
 def plot_pairwise_heatmap(
     pairs_df: pl.DataFrame, *, extractor_order: Sequence[str] | None = None, clamp_log2: float = 4.0
 ) -> p9.ggplot:
@@ -168,42 +127,6 @@ def plot_pairwise_heatmap(
             axis_text_x=p9.element_text(rotation=30, ha="right"),
             panel_grid=p9.element_blank(),
         )
-    )
-
-
-def plot_speedup_vs_baseline(df: pl.DataFrame, baseline: str) -> p9.ggplot:
-    """Boxplot + geometric-mean diamonds of speedup distributions relative to `baseline`."""
-    rel_df = speedup_vs_baseline_df(df, baseline)
-    gm_vs_base = (
-        rel_df.group_by("extractor")
-        .agg(pl.col("speedup_vs_base").log().mean().exp().alias("geomean"))
-        .sort("geomean", descending=True)
-    )
-    rel_order = gm_vs_base["extractor"].to_list()
-
-    return (
-        p9.ggplot(to_pd(rel_df), p9.aes(x="extractor", y="speedup_vs_base", fill="extractor"))
-        + p9.geom_hline(yintercept=1.0, linetype="dashed", color="#333333")
-        + p9.geom_boxplot(alpha=0.75, outlier_alpha=0.25, outlier_size=1.2, show_legend=False)
-        + p9.geom_point(
-            p9.aes(x="extractor", y="geomean"),
-            data=to_pd(gm_vs_base),
-            inherit_aes=False,
-            shape="D",
-            size=3.0,
-            color="#111111",
-            fill="white",
-        )
-        + p9.scale_x_discrete(limits=list(reversed(rel_order)))
-        + p9.scale_y_log10()
-        + p9.coord_flip()
-        + p9.labs(
-            title=f"Speedup Distribution vs. {baseline} (All Benchmarks)",
-            subtitle="Box: IQR & median, diamond: geometric mean; > 1.0x is faster than baseline",
-            x="",
-            y=f"Speedup ({baseline} / extractor, log scale)",
-        )
-        + p9.theme(figure_size=(10, max(4.0, 0.55 * len(rel_order) + 1.5)))
     )
 
 
@@ -546,59 +469,362 @@ def plot_structure_regimes(
     return grid & p9.theme(figure_size=(5.0 * ncols, 4.2 * nrows))
 
 
-def plot_regime_map(
-    df: pl.DataFrame,
-    *,
-    x_col: str = "enodes_per_eclass",
-    y_col: str = "avg_arity",
-    log_x: bool = True,
-    log_y: bool = True,
-) -> p9.ggplot:
-    """2D scatter map of e-graph structure colored by the fastest extractor on each benchmark."""
-    min_times = df.group_by("name", "roots").agg(pl.col("micros").min().alias("min_micros"))
-    winners = (
-        df.join(min_times, on=["name", "roots"], how="inner")
-        .filter(pl.col("micros") == pl.col("min_micros"))
-        .group_by("name", "roots")
-        .agg(
-            pl.when(pl.len() == 1)
-            .then(pl.col("extractor").first())
-            .otherwise(pl.lit("tie"))
-            .alias("fastest"),
-            pl.col(x_col).first().cast(pl.Float64).alias("_x"),
-            pl.col(y_col).first().cast(pl.Float64).alias("_y"),
-        )
-        .filter(
-            pl.col("_x").is_not_null()
-            & pl.col("_x").is_finite()
-            & pl.col("_y").is_not_null()
-            & pl.col("_y").is_finite()
-        )
-    )
-    if log_x:
-        winners = winners.filter(pl.col("_x") > 0)
-    if log_y:
-        winners = winners.filter(pl.col("_y") > 0)
+def _format_multiplier(value: float) -> str:
+    """Format a speedup or runtime multiplier compactly for plot labels."""
+    if value >= 100.0:
+        return f"{value:.0f}x"
+    if value >= 10.0:
+        return f"{value:.1f}x"
+    if value >= 0.01:
+        return f"{value:.2f}x"
+    if value >= 0.001:
+        return f"{value:.3f}x"
+    return "<0.001x"
 
-    x_label = STRUCTURE_FEATURES.get(x_col, x_col)
-    y_label = STRUCTURE_FEATURES.get(y_col, y_col)
-    p = (
-        p9.ggplot(to_pd(winners), p9.aes(x="_x", y="_y", color="fastest"))
-        + p9.geom_point(alpha=0.55, size=1.8)
-        + p9.labs(
-            title=f"Fastest Extractor Regime Map: {x_label} vs. {y_label}",
-            subtitle="Each point is one benchmark instance, colored by its fastest extractor",
-            x=f"{x_label} (log scale)" if log_x else x_label,
-            y=f"{y_label} (log scale)" if log_y else y_label,
-            color="Fastest",
+
+def _format_duration_ms(ms: float) -> str:
+    """Format a cumulative duration in milliseconds as a concise human-readable string."""
+    if ms >= 10_000.0:
+        return f"{ms / 1_000.0:.0f}s"
+    if ms >= 1_000.0:
+        return f"{ms / 1_000.0:.1f}s"
+    if ms >= 10.0:
+        return f"{ms:.0f}ms"
+    if ms >= 1.0:
+        return f"{ms:.1f}ms"
+    return f"{ms * 1_000.0:.0f}µs"
+
+
+def _suite_label_order(df: pl.DataFrame) -> tuple[pl.DataFrame, list[str]]:
+    """Return a `(suite, suite_instances, suite_label)` mapping and descending order of labels."""
+    counts = (
+        suite_counts_df(df)
+        .rename({"instances": "suite_instances"})
+        .sort(["suite_instances", "suite"], descending=[True, False])
+        .with_columns(
+            (
+                pl.col("suite")
+                + " (n="
+                + pl.col("suite_instances").map_elements(lambda n: f"{n:,}", return_dtype=pl.String)
+                + ")"
+            ).alias("suite_label")
         )
-        + p9.theme(figure_size=(10, 6.2))
     )
-    if log_x:
-        p = p + p9.scale_x_log10()
-    if log_y:
-        p = p + p9.scale_y_log10()
-    return p
+    return counts, counts["suite_label"].to_list()
+
+
+def plot_suite_extractor_heatmap(
+    df: pl.DataFrame,
+    baseline: str,
+    *,
+    extractor_order: Sequence[str] | None = None,
+    clamp_log2: float = 4.0,
+) -> p9.ggplot:
+    """Heatmap of per-suite geometric-mean speedup vs. `baseline` and fastest-extractor share."""
+    ext_order = _resolve_extractor_order(df, extractor_order)
+    _, suite_order = _suite_label_order(df)
+    summary = suite_extractor_summary_df(df, baseline).filter(
+        pl.col("geomean_speedup").is_not_null()
+    )
+
+    heatmap_df = summary.with_columns(
+        pl.col("geomean_speedup")
+        .log(base=2)
+        .clip(-clamp_log2, clamp_log2)
+        .alias("log2_speedup_clamped"),
+        (
+            pl.col("geomean_speedup").map_elements(_format_multiplier, return_dtype=pl.String)
+            + "\n("
+            + pl.col("fastest_rate").map_elements(lambda v: f"{v:.0f}%", return_dtype=pl.String)
+            + ")"
+        ).alias("label"),
+    )
+
+    return (
+        p9.ggplot(
+            to_pd(heatmap_df), p9.aes(x="extractor", y="suite_label", fill="log2_speedup_clamped")
+        )
+        + p9.geom_tile(color="white", size=0.8)
+        + p9.geom_text(p9.aes(label="label"), size=8.0, color="#111111", va="center")
+        + p9.scale_x_discrete(limits=ext_order)
+        + p9.scale_y_discrete(limits=list(reversed(suite_order)))
+        + p9.scale_fill_gradient2(
+            low="#d6604d",
+            mid="#f7f7f7",
+            high="#4393c3",
+            midpoint=0.0,
+            limits=(-clamp_log2, clamp_log2),
+            name=f"log2(speedup vs. {baseline})",
+        )
+        + p9.labs(
+            title=f"Per-Suite Performance vs. {baseline}",
+            subtitle=(
+                "Cell: geomean speedup and (% fastest in suite, incl. ties); "
+                "> 1.0x (blue) is faster than baseline"
+            ),
+            x="Extractor",
+            y="Suite",
+        )
+        + p9.theme(
+            figure_size=(
+                max(9.5, 1.35 * len(ext_order) + 2.0),
+                max(5.5, 0.58 * len(suite_order) + 1.8),
+            ),
+            axis_text_x=p9.element_text(rotation=25, ha="right"),
+            panel_grid=p9.element_blank(),
+        )
+    )
+
+
+def plot_suite_speedup_distributions(
+    df: pl.DataFrame,
+    baseline: str,
+    *,
+    extractor_order: Sequence[str] | None = None,
+    small_suite_n: int = 15,
+    ncols: int = 3,
+) -> p9.ggplot:
+    """Faceted speedup distributions vs. `baseline` per suite.
+
+    Large suites (`n > small_suite_n`) show horizontal p10–p90 whiskers, IQR bars, and median
+    ticks; smaller suites show raw per-instance points. A white diamond marks the geometric mean.
+    """
+    rel_df = speedup_vs_baseline_df(df, baseline)
+    ext_order = [e for e in _resolve_extractor_order(df, extractor_order) if e != baseline]
+    suite_map, suite_order = _suite_label_order(rel_df)
+    rel_labeled = rel_df.join(suite_map, on="suite", how="inner")
+
+    gm_df = rel_labeled.group_by("suite_label", "suite_instances", "extractor").agg(
+        pl.col("speedup_vs_base").log().mean().exp().alias("geomean")
+    )
+
+    large_summary = (
+        rel_labeled.filter(pl.col("suite_instances") > small_suite_n)
+        .group_by("suite_label", "extractor")
+        .agg(
+            pl.col("speedup_vs_base").quantile(0.10).alias("q10"),
+            pl.col("speedup_vs_base").quantile(0.25).alias("q25"),
+            pl.col("speedup_vs_base").median().alias("median"),
+            pl.col("speedup_vs_base").quantile(0.75).alias("q75"),
+            pl.col("speedup_vs_base").quantile(0.90).alias("q90"),
+        )
+    )
+    small_multi_df = rel_labeled.filter(
+        (pl.col("suite_instances") <= small_suite_n) & (pl.col("suite_instances") > 1)
+    )
+    small_single_df = rel_labeled.filter(pl.col("suite_instances") == 1)
+
+    def _with_ordered_suite(frame: pl.DataFrame) -> pd.DataFrame:
+        pdf = to_pd(frame)
+        pdf["suite_label"] = pd.Categorical(
+            pdf["suite_label"], categories=suite_order, ordered=True
+        )
+        return pdf
+
+    nrows = math.ceil(len(suite_order) / ncols)
+    p = p9.ggplot(_with_ordered_suite(gm_df), p9.aes(x="geomean", y="extractor")) + p9.geom_vline(
+        xintercept=1.0, linetype="dashed", color="#333333"
+    )
+    if not large_summary.is_empty():
+        large_pd = _with_ordered_suite(large_summary)
+        p = (
+            p
+            + p9.geom_segment(
+                p9.aes(x="q10", xend="q90", y="extractor", yend="extractor", color="extractor"),
+                data=large_pd,
+                inherit_aes=False,
+                size=0.9,
+                alpha=0.75,
+                show_legend=False,
+            )
+            + p9.geom_segment(
+                p9.aes(x="q25", xend="q75", y="extractor", yend="extractor", color="extractor"),
+                data=large_pd,
+                inherit_aes=False,
+                size=4.8,
+                alpha=0.82,
+                show_legend=False,
+            )
+            + p9.geom_point(
+                p9.aes(x="median", y="extractor"),
+                data=large_pd,
+                inherit_aes=False,
+                shape="|",
+                size=4.2,
+                color="#111111",
+            )
+        )
+    if not small_multi_df.is_empty():
+        p = p + p9.geom_jitter(
+            p9.aes(x="speedup_vs_base", y="extractor", color="extractor"),
+            data=_with_ordered_suite(small_multi_df),
+            inherit_aes=False,
+            width=0.0,
+            height=0.18,
+            alpha=0.72,
+            size=1.8,
+            show_legend=False,
+        )
+    if not small_single_df.is_empty():
+        p = p + p9.geom_point(
+            p9.aes(x="speedup_vs_base", y="extractor", color="extractor"),
+            data=_with_ordered_suite(small_single_df),
+            inherit_aes=False,
+            alpha=0.95,
+            size=3.2,
+            show_legend=False,
+        )
+
+    gm_multi_df = gm_df.filter(pl.col("suite_instances") > 1)
+    if not gm_multi_df.is_empty():
+        p = p + p9.geom_point(
+            p9.aes(x="geomean", y="extractor"),
+            data=_with_ordered_suite(gm_multi_df),
+            inherit_aes=False,
+            shape="D",
+            size=2.5,
+            color="#111111",
+            fill="white",
+        )
+
+    return (
+        p
+        + p9.scale_y_discrete(limits=list(reversed(ext_order)))
+        + p9.scale_x_log10(expand=(0.08, 0.0))
+        + p9.facet_wrap("~suite_label", ncol=ncols, scales="free_x")
+        + p9.labs(
+            title=f"Speedup Distribution vs. {baseline} by Suite",
+            subtitle=(
+                f"n > {small_suite_n}: thick bar = IQR, whisker = p10–p90, tick = median; "
+                "smaller suites: raw points; diamond = geomean (> 1.0x is faster)"
+            ),
+            x=f"Speedup ({baseline} / extractor, log scale)",
+            y="",
+        )
+        + p9.theme(
+            figure_size=(5.0 * ncols, max(4.0, 2.75 * nrows + 1.2)),
+            panel_spacing_x=0.03,
+            panel_spacing_y=0.04,
+            strip_text=p9.element_text(weight="bold", size=10),
+        )
+    )
+
+
+def plot_suite_normalized_runtime(
+    df: pl.DataFrame, baseline: str, *, extractor_order: Sequence[str] | None = None, ncols: int = 3
+) -> p9.ggplot:
+    """Faceted diverging lollipop chart of total suite runtime relative to `baseline`."""
+    ext_order = _resolve_extractor_order(df, extractor_order)
+    _, suite_order = _suite_label_order(df)
+    summary = suite_extractor_summary_df(df, baseline).filter(
+        pl.col("total_runtime_ratio").is_not_null()
+    )
+
+    plot_df = (
+        summary.with_columns(
+            pl.col("total_runtime_ratio").log(base=10).alias("_log_ratio"),
+            pl.when(pl.col("extractor") == baseline)
+            .then(pl.lit("baseline"))
+            .when(pl.col("total_runtime_ratio") < 1.0)
+            .then(pl.lit("faster"))
+            .otherwise(pl.lit("slower"))
+            .alias("status"),
+            (
+                pl.col("total_runtime_ratio").map_elements(
+                    _format_multiplier, return_dtype=pl.String
+                )
+                + " ("
+                + pl.col("total_ms").map_elements(_format_duration_ms, return_dtype=pl.String)
+                + ")"
+            ).alias("label"),
+        )
+        .with_columns(
+            pl.max_horizontal(
+                pl.col("_log_ratio").max().over("suite_label")
+                - pl.col("_log_ratio").min().over("suite_label"),
+                pl.lit(0.3),
+            ).alias("_log_span")
+        )
+        .with_columns(
+            pl.when(pl.col("total_runtime_ratio") < 1.0)
+            .then(10.0 ** (pl.col("_log_ratio") - 0.045 * pl.col("_log_span")))
+            .otherwise(10.0 ** (pl.col("_log_ratio") + 0.045 * pl.col("_log_span")))
+            .alias("label_x")
+        )
+    )
+
+    def _with_ordered_suite(frame: pl.DataFrame) -> pd.DataFrame:
+        pdf = to_pd(frame)
+        pdf["suite_label"] = pd.Categorical(
+            pdf["suite_label"], categories=suite_order, ordered=True
+        )
+        return pdf
+
+    faster_df = plot_df.filter(pl.col("total_runtime_ratio") < 1.0)
+    slower_or_base_df = plot_df.filter(pl.col("total_runtime_ratio") >= 1.0)
+    nrows = math.ceil(len(suite_order) / ncols)
+
+    p = (
+        p9.ggplot(
+            _with_ordered_suite(plot_df),
+            p9.aes(x="total_runtime_ratio", y="extractor", color="status"),
+        )
+        + p9.geom_vline(xintercept=1.0, linetype="dashed", color="#444444")
+        + p9.geom_segment(
+            p9.aes(x=1.0, xend="total_runtime_ratio", y="extractor", yend="extractor"), size=1.1
+        )
+        + p9.geom_point(size=2.6)
+    )
+    if not faster_df.is_empty():
+        p = p + p9.geom_text(
+            p9.aes(x="label_x", y="extractor", label="label"),
+            data=_with_ordered_suite(faster_df),
+            inherit_aes=False,
+            ha="right",
+            size=7.2,
+            color="#222222",
+        )
+    if not slower_or_base_df.is_empty():
+        p = p + p9.geom_text(
+            p9.aes(x="label_x", y="extractor", label="label"),
+            data=_with_ordered_suite(slower_or_base_df),
+            inherit_aes=False,
+            ha="left",
+            size=7.2,
+            color="#222222",
+        )
+
+    return (
+        p
+        + p9.scale_y_discrete(limits=list(reversed(ext_order)))
+        + p9.scale_x_log10(expand=(0.50, 0.0))
+        + p9.scale_color_manual(
+            values={"faster": "#2b83ba", "baseline": "#777777", "slower": "#d7191c"},
+            limits=["faster", "baseline", "slower"],
+            labels={
+                "faster": f"Faster than {baseline}",
+                "baseline": baseline,
+                "slower": f"Slower than {baseline}",
+            },
+        )
+        + p9.facet_wrap("~suite_label", ncol=ncols, scales="free_x")
+        + p9.labs(
+            title=f"Normalized Cumulative Runtime by Suite (vs. {baseline})",
+            subtitle=(
+                "Total suite wall-clock time / baseline total time (log scale); "
+                "< 1.0x (left, blue) is faster; label shows ratio (total time)"
+            ),
+            x=f"Total Runtime Ratio (extractor / {baseline}, log scale)",
+            y="",
+            color="",
+        )
+        + p9.theme(
+            figure_size=(5.4 * ncols, max(4.2, 2.9 * nrows + 1.2)),
+            panel_spacing_x=0.03,
+            panel_spacing_y=0.04,
+            strip_text=p9.element_text(weight="bold", size=10),
+        )
+    )
 
 
 def plot_pair_feature_correlations(pair_df: pl.DataFrame, e1: str, e2: str) -> p9.ggplot:
