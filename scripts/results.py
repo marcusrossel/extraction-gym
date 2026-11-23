@@ -817,44 +817,12 @@ def tree_cost_mismatches_df(
     )
 
 
-def _display_banner(msg: str, *, error: bool) -> None:
-    try:
-        from IPython.core.getipython import get_ipython
-        from IPython.display import HTML, display
-
-        if get_ipython() is not None:
-            if error:
-                style = (
-                    "padding:14px 18px;border:2px solid #b71c1c;border-left:8px solid #b71c1c;"
-                    "background:#fdecea;color:#7f0000;font-size:15px;font-weight:700;"
-                    "border-radius:4px"
-                )
-                prefix = "&#9888;&#65039; "
-            else:
-                style = (
-                    "padding:10px 14px;border-left:5px solid #2e7d32;background:#edf7ed;"
-                    "color:#1b5e20;font-weight:500;border-radius:4px"
-                )
-                prefix = "&#10004; "
-            display(HTML(f"<div style='{style}'>{prefix}{msg}</div>"))
-            return
-    except ImportError:
-        pass
-
-    if error:
-        border = "!" * max(len(msg) + 8, 60)
-        print(f"\n{border}\n!!! {msg} !!!\n{border}\n", file=sys.stderr)
-    else:
-        print(f"OK: {msg}")
-
-
 def check_tree_extractors(
     df: pl.DataFrame, *, extractors: Sequence[str] = TREE_EXTRACTORS, tol: float = 1e-9
 ) -> pl.DataFrame | None:
     """Sanity-check that all present tree extractors agree on `tree` cost.
 
-    Displays a loud warning banner and returns the mismatching rows if any disagree;
-    otherwise displays a brief confirmation and returns `None`.
+    Prints a short summary and returns the mismatching rows if any disagree, or `None` otherwise.
     """
     present = [e for e in extractors if e in set(df["extractor"].unique().to_list())]
     mismatches = tree_cost_mismatches_df(df, extractors=present, tol=tol)
@@ -865,16 +833,15 @@ def check_tree_extractors(
     )
 
     if mismatches.is_empty():
-        _display_banner(
-            f"Tree cost sanity check passed: all {len(present)} tree extractors "
-            f"({', '.join(present)}) agree across {n_instances:,} benchmarks.",
-            error=False,
+        print(
+            f"Tree cost check passed: {len(present)} extractors "
+            f"({', '.join(present)}) agree across {n_instances:,} benchmarks."
         )
         return None
 
-    _display_banner(
-        f"TREE COST MISMATCH DETECTED: {mismatches.height:,} / {n_instances:,} benchmarks "
-        f"differ across tree extractors ({', '.join(present)})!",
-        error=True,
+    print(
+        f"Tree cost mismatch: {mismatches.height:,} / {n_instances:,} benchmarks "
+        f"differ across {', '.join(present)}.",
+        file=sys.stderr,
     )
     return mismatches
