@@ -40,7 +40,11 @@ test:
 
 .PHONY: nits
 nits:
-	rustup component add rustfmt clippy
+	@if ! cargo fmt --version >/dev/null 2>&1 || ! cargo clippy --version >/dev/null 2>&1; then \
+		if [ -z "$$IN_NIX_SHELL" ] && command -v rustup >/dev/null 2>&1; then \
+			rustup component add rustfmt clippy; \
+		fi; \
+	fi
 	cargo fmt -- --check
 	cargo clean --doc
 
