@@ -2,6 +2,7 @@
 out.csv
 out.tsv
 output/
+plots/
 out.json
 .DS_Store
 

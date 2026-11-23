@@ -4,7 +4,7 @@
 
 Builds `target/release/extraction-gym` as your normal user (full cores/boost), then
 delegates to `scripts/benchmode.py` to run the benchmarks pinned to a single isolated
-CPU and optionally plots the results with `scripts/plot.py`.
+CPU. Results are written to `output/` for visualization in `analysis.ipynb`.
 """
 
 import json
@@ -25,7 +25,6 @@ BINARY_PATH = REPO_ROOT / "target" / "release" / "extraction-gym"
 DATA_DIR = REPO_ROOT / "data"
 OUTPUT_DIR = REPO_ROOT / "output"
 BENCHMODE_SCRIPT = REPO_ROOT / "scripts" / "benchmode.py"
-PLOT_SCRIPT = REPO_ROOT / "scripts" / "plot.py"
 
 
 @dataclass(frozen=True)
@@ -135,9 +134,6 @@ class BenchArgs:
     build: bool = True
     """Run `cargo build --release` before benchmarking."""
 
-    plot: bool = True
-    """Run scripts/plot.py after benchmarking."""
-
     def to_cli_args(self, *, build: bool | None = None) -> list[str]:
         argv: list[str] = []
         if self.extractors:
@@ -151,7 +147,6 @@ class BenchArgs:
         argv.extend(["--runs", str(self.runs), "--warmup", str(self.warmup)])
         do_build = self.build if build is None else build
         argv.append("--build" if do_build else "--no-build")
-        argv.append("--plot" if self.plot else "--no-plot")
         return argv
 
 
@@ -210,10 +205,6 @@ def run_benchmarks(args: BenchArgs) -> None:
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         sys.exit(130)
-
-    if args.plot and len(extractors) >= 2:
-        out_files = [str(job.out_path) for job in jobs]
-        subprocess.run([sys.executable, str(PLOT_SCRIPT), *out_files], cwd=REPO_ROOT, check=True)
 
 
 def main(args: BenchArgs) -> None:
