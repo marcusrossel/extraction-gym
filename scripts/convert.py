@@ -5,23 +5,26 @@
 import json
 import sys
 from collections import Counter
+from collections.abc import Iterable, Sequence
+from pathlib import Path
 
 
-def convert(f):
-    count = Counter()
-    j = {"nodes": {}}
+def convert(f: Iterable[str]) -> str:
+    count: Counter[str] = Counter()
+    nodes = {}
+    j = {"nodes": nodes}
     roots = set()
-    for line in f.readlines():
-        line = line.strip()
-        root_prefix = "## root: "
+    root_prefix = "## root: "
+    for raw_line in f:
+        line = raw_line.strip()
         if line.startswith(root_prefix):
-            roots.add(line[len(root_prefix) :])
+            roots.add(line.removeprefix(root_prefix))
         elif line.startswith("#"):
             j["comment"] = line
         else:
             eclass, cost, op, *children = (x.strip() for x in line.split(","))
             node_id = f"{eclass}__{count[eclass]}"
-            j["nodes"][node_id] = {
+            nodes[node_id] = {
                 "op": op,
                 "cost": float(cost),
                 "eclass": eclass,
@@ -33,12 +36,16 @@ def convert(f):
     return json.dumps(j, indent=2)
 
 
-if __name__ == "__main__":
-    for filename in sys.argv[1:]:
+def main(argv: Sequence[str] | None = None) -> None:
+    filenames = sys.argv[1:] if argv is None else argv
+    for filename in filenames:
         print(f"converting {filename}")
-        with open(filename) as f:
+        with Path(filename).open() as f:
             j = convert(f)
         outname = filename.replace(".csv", "") + ".json"
         outname = outname.replace(".json.json", ".json")
-        with open(outname, "w") as f:
-            f.write(j)
+        Path(outname).write_text(j)
+
+
+if __name__ == "__main__":
+    main()

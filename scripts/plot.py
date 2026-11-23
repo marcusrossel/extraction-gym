@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
-import glob
 import json
 import statistics
 import sys
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT: Path = Path(__file__).resolve().parent.parent
 
 
-def load_jsons(files):
+def load_jsons(files: Sequence[str | Path]) -> list[dict[str, Any]]:
     js = []
     for file in files:
         try:
-            with open(file) as f:
+            with Path(file).open() as f:
                 data = json.load(f)
                 for j in data["results"]:
                     j["name"] = data["name"]
                     j["extractor"] = data["extractor"]
-                    j["json_path"] = file
+                    j["json_path"] = str(file)
                     js.append(j)
         except Exception:
             print(f"Error loading {file}")
@@ -25,7 +26,7 @@ def load_jsons(files):
     return js
 
 
-def process(js, extractors):
+def process(js: Sequence[dict[str, Any]], extractors: Sequence[str]) -> None:
     by_name = {}
     for j in js:
         n, e = j["name"], j["extractor"]
@@ -35,44 +36,40 @@ def process(js, extractors):
     assert len(extractors) == 2
     e1, e2 = extractors
 
-    e1_cumulative=0
-    e2_cumulative=0
+    e1_cumulative = 0
+    e2_cumulative = 0
 
     summaries = {}
 
     for name, d in by_name.items():
         try:
-            if d[e1]["tree"] !=  d[e2]["tree"]:
-                print(name, " differs in tree cost: ", d[e1]["tree"], d[e2]["tree"]);
-            if d[e1]["dag"] !=  d[e2]["dag"]:
-                print(name, " differs in dag cost: ", d[e1]["dag"], d[e2]["dag"]);
+            if d[e1]["tree"] != d[e2]["tree"]:
+                print(name, " differs in tree cost: ", d[e1]["tree"], d[e2]["tree"])
+            if d[e1]["dag"] != d[e2]["dag"]:
+                print(name, " differs in dag cost: ", d[e1]["dag"], d[e2]["dag"])
 
             tree_ratio = d[e1]["tree"] / d[e2]["tree"]
             dag_ratio = d[e1]["dag"] / d[e2]["dag"]
             micros_ratio = max(1, d[e1]["micros"]) / max(1, d[e2]["micros"])
 
-            e1_cumulative += d[e1]["micros"];
-            e2_cumulative += d[e2]["micros"];
+            e1_cumulative += d[e1]["micros"]
+            e2_cumulative += d[e2]["micros"]
 
-            summaries[name] = {
-                "tree": tree_ratio,
-                "dag": dag_ratio,
-                "micros": micros_ratio,
-            }
+            summaries[name] = {"tree": tree_ratio, "dag": dag_ratio, "micros": micros_ratio}
         except Exception:
             print(f"Error processing {name}")
             raise
 
-    print(f"cumulative time for {e1}: {e1_cumulative/1000:.0f}ms")
-    print(f"cumulative time for {e2}: {e2_cumulative/1000:.0f}ms")
+    print(f"cumulative time for {e1}: {e1_cumulative / 1000:.0f}ms")
+    print(f"cumulative time for {e2}: {e2_cumulative / 1000:.0f}ms")
 
     print(f"cumulative tree cost for {e1}: {sum(d[e1]['tree'] for d in by_name.values()):.0f}")
     print(f"cumulative tree cost for {e2}: {sum(d[e2]['tree'] for d in by_name.values()):.0f}")
     print(f"cumulative dag cost for {e1}: {sum(d[e1]['dag'] for d in by_name.values()):.0f}")
     print(f"cumulative dag cost for {e2}: {sum(d[e2]['dag'] for d in by_name.values()):.0f}")
 
-    print(f"Cumulative time for {e1}: {e1_cumulative/1000:.0f}ms")
-    print(f"Cumulative time for {e2}: {e2_cumulative/1000:.0f}ms")
+    print(f"Cumulative time for {e1}: {e1_cumulative / 1000:.0f}ms")
+    print(f"Cumulative time for {e2}: {e2_cumulative / 1000:.0f}ms")
 
     print(f"{e1} / {e2}")
 
@@ -87,10 +84,10 @@ def process(js, extractors):
 
     print("quantiles")
 
-    def quantiles(key):
+    def quantiles(key: str) -> str:
         xs = [s[key] for s in summaries.values()]
         qs = statistics.quantiles(xs, n=4)
-        with_extremes = [min(xs)] + qs + [max(xs)]
+        with_extremes = [min(xs), *qs, max(xs)]
         return ", ".join(f"{x:.4f}" for x in with_extremes)
 
     print(f"tree:   {quantiles('tree')}")
@@ -98,16 +95,17 @@ def process(js, extractors):
     print(f"micros: {quantiles('micros')}")
 
 
-if __name__ == "__main__":
+def main(argv: Sequence[str] | None = None) -> None:
     print()
     print(" ------------------------ ")
     print(" ------- plotting ------- ")
     print(" ------------------------ ")
     print()
+    arg_files = list(sys.argv[1:] if argv is None else argv)
     files = (
-        sys.argv[1:]
-        or glob.glob("output/**/*.json", recursive=True)
-        or glob.glob(str(REPO_ROOT / "output" / "**" / "*.json"), recursive=True)
+        [Path(f) for f in arg_files]
+        or list(Path("output").rglob("*.json"))
+        or list((REPO_ROOT / "output").rglob("*.json"))
     )
     js = load_jsons(files)
     print(f"Loaded {len(js)} jsons.")
@@ -122,3 +120,7 @@ if __name__ == "__main__":
             print(f"###################################################\n{ex1} vs {ex2}\n\n")
             process(js, [ex1, ex2])
             print("\n\n")
+
+
+if __name__ == "__main__":
+    main()

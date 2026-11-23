@@ -9,7 +9,6 @@ dependencies = [
     "jupyter>=1.1.1",
     "matplotlib>=3.11.2",
     "polars>=2.1.0",
-    "matplotlib>=3.11.2",
     "plotnine>=0.15.9",
     "tqdm>=4.70.1",
 ]
@@ -17,4 +16,20 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pre-commit>=4.5.1",
+    "ruff>=0.17.6",
+    "ty>=0.0.108",
 ]
+
+[tool.ruff]
+include = ["scripts/**/*.py"]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint.isort]
+split-on-trailing-comma = false
+
+[tool.ruff.format]
+skip-magic-trailing-comma = true
+
+[tool.ty.src]
+include = ["scripts"]
