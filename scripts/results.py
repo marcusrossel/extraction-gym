@@ -5,7 +5,7 @@ import math
 import sys
 from collections import deque
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,39 +35,6 @@ STRUCTURE_FEATURES: dict[str, str] = {
     "max_depth": "Max BFS Depth",
     "cyclic_eclasses_pct": "Cyclic E-Classes (%)",
 }
-
-
-@dataclass(frozen=True)
-class EGraphInfo:
-    """Precomputed per-eclass adjacency, size, arity, and cycle info for an e-graph."""
-
-    eclass_children: dict[str, tuple[str, ...]]
-    eclass_enodes: dict[str, int]
-    eclass_child_refs: dict[str, int]
-    eclass_leaves: dict[str, int]
-    cyclic_eclasses: frozenset[str]
-    total_enodes: int
-    total_eclasses: int
-
-
-@dataclass(frozen=True)
-class EGraphStats:
-    """Total, reachability, density, branching, depth, and cycle stats for one (e-graph, roots)."""
-
-    total_enodes: int | None = None
-    total_eclasses: int | None = None
-    reach_enodes: int | None = None
-    reach_eclasses: int | None = None
-    reach_enodes_pct: float | None = None
-    reach_eclasses_pct: float | None = None
-    enodes_per_eclass: float | None = None
-    avg_arity: float | None = None
-    avg_child_eclasses: float | None = None
-    avg_parent_enodes: float | None = None
-    leaf_pct: float | None = None
-    max_depth: int | None = None
-    cyclic_eclasses_pct: float | None = None
-
 
 _RESULTS_SCHEMA: pl.Schema = pl.Schema(
     {
@@ -105,6 +72,66 @@ _STATS_SCHEMA: pl.Schema = pl.Schema(
     }
 )
 
+_NON_META_COLS: frozenset[str] = frozenset({"result_index", "extractor", "micros", "tree", "dag"})
+
+
+@dataclass(frozen=True)
+class EGraphInfo:
+    """Precomputed per-eclass adjacency, size, arity, and cycle info for an e-graph."""
+
+    eclass_children: dict[str, tuple[str, ...]]
+    eclass_enodes: dict[str, int]
+    eclass_child_refs: dict[str, int]
+    eclass_leaves: dict[str, int]
+    cyclic_eclasses: frozenset[str]
+    total_enodes: int
+    total_eclasses: int
+
+
+@dataclass(frozen=True)
+class EGraphStats:
+    """Total, reachability, density, branching, depth, and cycle stats for one (e-graph, roots)."""
+
+    total_enodes: int | None = None
+    total_eclasses: int | None = None
+    reach_enodes: int | None = None
+    reach_eclasses: int | None = None
+    reach_enodes_pct: float | None = None
+    reach_eclasses_pct: float | None = None
+    enodes_per_eclass: float | None = None
+    avg_arity: float | None = None
+    avg_child_eclasses: float | None = None
+    avg_parent_enodes: float | None = None
+    leaf_pct: float | None = None
+    max_depth: int | None = None
+    cyclic_eclasses_pct: float | None = None
+
+
+def _clamp_micros(col: str = "micros") -> pl.Expr:
+    return pl.col(col).clip(lower_bound=1).cast(pl.Float64)
+
+
+def _geomean(expr: pl.Expr) -> pl.Expr:
+    return expr.log().mean().exp()
+
+
+def _safe_cost_ratio(col1: str, col2: str) -> pl.Expr:
+    c1, c2 = pl.col(col1), pl.col(col2)
+    return (
+        pl.when((c1 == 0.0) & (c2 == 0.0))
+        .then(pl.lit(1.0))
+        .when(c2 == 0.0)
+        .then(pl.lit(None, dtype=pl.Float64))
+        .otherwise(c1 / c2)
+    )
+
+
+def _positive_finite_geomean(expr: pl.Expr) -> pl.Expr:
+    return _geomean(expr.filter(expr.is_not_null() & expr.is_finite() & (expr > 0)))
+
+
+# --- Loading & E-Graph Structural Stats ---
+
 
 def find_result_files(
     files: Sequence[str | Path] = (), output_dir: str | Path | None = None
@@ -114,11 +141,12 @@ def find_result_files(
         return [Path(f) for f in files]
     if output_dir is not None:
         return sorted(Path(output_dir).rglob("*.json"))
-    local_out = Path("output")
-    found = sorted(local_out.rglob("*.json")) if local_out.exists() else []
-    if found:
-        return found
-    return sorted(DEFAULT_OUTPUT_DIR.rglob("*.json")) if DEFAULT_OUTPUT_DIR.exists() else []
+    for candidate in (Path("output"), DEFAULT_OUTPUT_DIR):
+        if candidate.exists():
+            found = sorted(candidate.rglob("*.json"))
+            if found:
+                return found
+    return []
 
 
 def load_entries(files: Sequence[str | Path]) -> list[dict[str, Any]]:
@@ -266,9 +294,9 @@ def egraph_stats(egraph: EGraphInfo | None, roots: Sequence[str]) -> EGraphStats
         total_eclasses=egraph.total_eclasses,
         reach_enodes=reach_enodes,
         reach_eclasses=reach_eclasses,
-        reach_enodes_pct=100.0 * reach_enodes / egraph.total_enodes
-        if egraph.total_enodes
-        else None,
+        reach_enodes_pct=(
+            100.0 * reach_enodes / egraph.total_enodes if egraph.total_enodes else None
+        ),
         reach_eclasses_pct=(
             100.0 * reach_eclasses / egraph.total_eclasses if egraph.total_eclasses else None
         ),
@@ -291,10 +319,9 @@ def load_results_df(
     """Load benchmark results into a tidy Polars DataFrame.
 
     One row per (name, roots, extractor), optionally enriched with total and
-    root-reachable e-node/e-class counts computed once per unique (name, roots).
+    root-reachable e-node/e-class stats computed once per unique (name, roots).
     """
-    resolved = find_result_files(files, output_dir=output_dir)
-    entries = load_entries(resolved)
+    entries = load_entries(find_result_files(files, output_dir=output_dir))
     if not entries:
         empty = pl.DataFrame(schema=_RESULTS_SCHEMA)
         if with_egraph_stats:
@@ -336,33 +363,25 @@ def load_results_df(
         return df
 
     egraph_cache: dict[str, EGraphInfo | None] = {}
-    stat_rows: list[dict[str, Any]] = []
-    for (name, roots_str), roots_tuple in unique_instances.items():
-        if name not in egraph_cache:
-            egraph_cache[name] = load_egraph(name)
-        st = egraph_stats(egraph_cache[name], roots_tuple)
-        stat_rows.append(
-            {
-                "name": name,
-                "roots": roots_str,
-                "total_enodes": st.total_enodes,
-                "total_eclasses": st.total_eclasses,
-                "reach_enodes": st.reach_enodes,
-                "reach_eclasses": st.reach_eclasses,
-                "reach_enodes_pct": st.reach_enodes_pct,
-                "reach_eclasses_pct": st.reach_eclasses_pct,
-                "enodes_per_eclass": st.enodes_per_eclass,
-                "avg_arity": st.avg_arity,
-                "avg_child_eclasses": st.avg_child_eclasses,
-                "avg_parent_enodes": st.avg_parent_enodes,
-                "leaf_pct": st.leaf_pct,
-                "max_depth": st.max_depth,
-                "cyclic_eclasses_pct": st.cyclic_eclasses_pct,
-            }
-        )
+    stat_rows = [
+        {
+            "name": name,
+            "roots": roots_str,
+            **asdict(
+                egraph_stats(
+                    egraph_cache.setdefault(name, load_egraph(name))
+                    if name not in egraph_cache
+                    else egraph_cache[name],
+                    roots_tuple,
+                )
+            ),
+        }
+        for (name, roots_str), roots_tuple in unique_instances.items()
+    ]
+    return df.join(pl.DataFrame(stat_rows, schema=_STATS_SCHEMA), on=["name", "roots"], how="left")
 
-    stats_df = pl.DataFrame(stat_rows, schema=_STATS_SCHEMA)
-    return df.join(stats_df, on=["name", "roots"], how="left")
+
+# --- Filtering & Overview Aggregations ---
 
 
 def filter_egraph_stats(
@@ -374,218 +393,16 @@ def filter_egraph_stats(
     min_eclasses_pct: float | None = None,
 ) -> pl.DataFrame:
     """Filter a results or pairwise DataFrame by reachable e-node/e-class thresholds."""
-    if min_enodes is not None:
-        df = df.filter(
-            pl.col("reach_enodes").is_not_null() & (pl.col("reach_enodes") >= min_enodes)
-        )
-    if min_enodes_pct is not None:
-        df = df.filter(
-            pl.col("reach_enodes_pct").is_not_null()
-            & (pl.col("reach_enodes_pct") >= min_enodes_pct)
-        )
-    if min_eclasses is not None:
-        df = df.filter(
-            pl.col("reach_eclasses").is_not_null() & (pl.col("reach_eclasses") >= min_eclasses)
-        )
-    if min_eclasses_pct is not None:
-        df = df.filter(
-            pl.col("reach_eclasses_pct").is_not_null()
-            & (pl.col("reach_eclasses_pct") >= min_eclasses_pct)
-        )
+    thresholds = (
+        ("reach_enodes", min_enodes),
+        ("reach_enodes_pct", min_enodes_pct),
+        ("reach_eclasses", min_eclasses),
+        ("reach_eclasses_pct", min_eclasses_pct),
+    )
+    for col, threshold in thresholds:
+        if threshold is not None:
+            df = df.filter(pl.col(col).is_not_null() & (pl.col(col) >= threshold))
     return df
-
-
-def _safe_cost_ratio(col1: str, col2: str) -> pl.Expr:
-    return (
-        pl.when((pl.col(col1) == 0.0) & (pl.col(col2) == 0.0))
-        .then(pl.lit(1.0))
-        .when(pl.col(col2) == 0.0)
-        .then(pl.lit(None, dtype=pl.Float64))
-        .otherwise(pl.col(col1) / pl.col(col2))
-    )
-
-
-def pairwise_comparison_df(
-    df: pl.DataFrame,
-    e1: str,
-    e2: str,
-    *,
-    min_enodes: int | None = None,
-    min_enodes_pct: float | None = None,
-    min_eclasses: int | None = None,
-    min_eclasses_pct: float | None = None,
-) -> pl.DataFrame:
-    """Join two extractors on (name, roots) and compute speedups, winners, and cost ratios.
-
-    `speedup` is `max(micros_2, 1) / max(micros_1, 1)` (> 1 means `e1` is faster).
-    `micros_ratio` is `max(micros_1, 1) / max(micros_2, 1)` (< 1 means `e1` is faster).
-    """
-    meta_cols = [
-        c
-        for c in (
-            "name",
-            "suite",
-            "benchmark",
-            "roots",
-            "label",
-            "n_roots",
-            "total_enodes",
-            "total_eclasses",
-            "reach_enodes",
-            "reach_eclasses",
-            "reach_enodes_pct",
-            "reach_eclasses_pct",
-            "enodes_per_eclass",
-            "avg_arity",
-            "avg_child_eclasses",
-            "avg_parent_enodes",
-            "leaf_pct",
-            "max_depth",
-            "cyclic_eclasses_pct",
-        )
-        if c in df.columns
-    ]
-
-    d1 = df.filter(pl.col("extractor") == e1).select(
-        *meta_cols,
-        pl.col("micros").alias("micros_1"),
-        pl.col("tree").alias("tree_1"),
-        pl.col("dag").alias("dag_1"),
-    )
-    d2 = df.filter(pl.col("extractor") == e2).select(
-        "name",
-        "roots",
-        pl.col("micros").alias("micros_2"),
-        pl.col("tree").alias("tree_2"),
-        pl.col("dag").alias("dag_2"),
-    )
-
-    joined = d1.join(d2, on=["name", "roots"], how="inner")
-    joined = filter_egraph_stats(
-        joined,
-        min_enodes=min_enodes,
-        min_enodes_pct=min_enodes_pct,
-        min_eclasses=min_eclasses,
-        min_eclasses_pct=min_eclasses_pct,
-    )
-
-    t1c = pl.max_horizontal(pl.col("micros_1"), pl.lit(1)).cast(pl.Float64)
-    t2c = pl.max_horizontal(pl.col("micros_2"), pl.lit(1)).cast(pl.Float64)
-
-    return joined.with_columns(
-        (t2c / t1c).alias("speedup"),
-        (t1c / t2c).alias("micros_ratio"),
-        pl.when(t1c < t2c)
-        .then(pl.lit(e1))
-        .when(t2c < t1c)
-        .then(pl.lit(e2))
-        .otherwise(pl.lit("tie"))
-        .alias("winner"),
-        pl.when(t1c < t2c)
-        .then(t2c / t1c)
-        .when(t2c < t1c)
-        .then(t1c / t2c)
-        .otherwise(pl.lit(1.0))
-        .alias("winner_ratio"),
-        _safe_cost_ratio("tree_1", "tree_2").alias("tree_ratio"),
-        _safe_cost_ratio("dag_1", "dag_2").alias("dag_ratio"),
-        (pl.col("tree_1") - pl.col("tree_2")).alias("tree_diff"),
-        (pl.col("dag_1") - pl.col("dag_2")).alias("dag_diff"),
-    )
-
-
-def all_pairs_summary_df(df: pl.DataFrame) -> pl.DataFrame:
-    """Compute pairwise geometric means, quantiles, and win rates for all extractor pairs.
-
-    For each ordered pair (e1, e2):
-    - `geomean_speedup` > 1 means `e1` is faster than `e2` (geomean of e2/e1).
-    - `geomean_micros_ratio` < 1 means `e1` is faster than `e2` (geomean of e1/e2).
-    """
-    extractors = sorted(df["extractor"].unique().to_list())
-    rows: list[dict[str, Any]] = []
-
-    for e1 in extractors:
-        for e2 in extractors:
-            if e1 == e2:
-                n = df.filter(pl.col("extractor") == e1).height
-                rows.append(
-                    {
-                        "e1": e1,
-                        "e2": e2,
-                        "n_benchmarks": n,
-                        "geomean_speedup": 1.0,
-                        "geomean_micros_ratio": 1.0,
-                        "q25_speedup": 1.0,
-                        "median_speedup": 1.0,
-                        "q75_speedup": 1.0,
-                        "geomean_tree_ratio": 1.0,
-                        "geomean_dag_ratio": 1.0,
-                        "tree_diffs": 0,
-                        "dag_diffs": 0,
-                        "e1_win_rate": 0.0,
-                        "tie_rate": 100.0,
-                    }
-                )
-                continue
-
-            pair = pairwise_comparison_df(df, e1, e2)
-            if pair.is_empty():
-                continue
-
-            pos_tree = pair.filter(
-                pl.col("tree_ratio").is_not_null()
-                & pl.col("tree_ratio").is_finite()
-                & (pl.col("tree_ratio") > 0)
-            )
-            pos_dag = pair.filter(
-                pl.col("dag_ratio").is_not_null()
-                & pl.col("dag_ratio").is_finite()
-                & (pl.col("dag_ratio") > 0)
-            )
-
-            stats = pair.select(
-                pl.col("speedup").log().mean().exp().alias("gm_speedup"),
-                pl.col("micros_ratio").log().mean().exp().alias("gm_ratio"),
-                pl.col("speedup").quantile(0.25).alias("q25"),
-                pl.col("speedup").median().alias("median"),
-                pl.col("speedup").quantile(0.75).alias("q75"),
-                (pl.col("tree_diff").abs() > 1e-9).sum().alias("tree_diffs"),
-                (pl.col("dag_diff").abs() > 1e-9).sum().alias("dag_diffs"),
-                (pl.col("winner") == e1).mean().alias("win_rate"),
-                (pl.col("winner") == "tie").mean().alias("tie_rate"),
-            ).row(0, named=True)
-
-            gm_tree = (
-                pos_tree.select(pl.col("tree_ratio").log().mean().exp()).item()
-                if not pos_tree.is_empty()
-                else None
-            )
-            gm_dag = (
-                pos_dag.select(pl.col("dag_ratio").log().mean().exp()).item()
-                if not pos_dag.is_empty()
-                else None
-            )
-
-            rows.append(
-                {
-                    "e1": e1,
-                    "e2": e2,
-                    "n_benchmarks": pair.height,
-                    "geomean_speedup": float(stats["gm_speedup"]),
-                    "geomean_micros_ratio": float(stats["gm_ratio"]),
-                    "q25_speedup": float(stats["q25"]),
-                    "median_speedup": float(stats["median"]),
-                    "q75_speedup": float(stats["q75"]),
-                    "geomean_tree_ratio": float(gm_tree) if gm_tree is not None else None,
-                    "geomean_dag_ratio": float(gm_dag) if gm_dag is not None else None,
-                    "tree_diffs": int(stats["tree_diffs"]),
-                    "dag_diffs": int(stats["dag_diffs"]),
-                    "e1_win_rate": 100.0 * float(stats["win_rate"]),
-                    "tie_rate": 100.0 * float(stats["tie_rate"]),
-                }
-            )
-
-    return pl.DataFrame(rows)
 
 
 def filter_results(
@@ -622,7 +439,23 @@ def suite_counts_df(df: pl.DataFrame) -> pl.DataFrame:
         .unique()
         .group_by("suite")
         .len(name="instances")
-        .sort("instances", descending=True)
+        .sort(["instances", "suite"], descending=[True, False])
+    )
+
+
+def suite_labels_df(df: pl.DataFrame) -> pl.DataFrame:
+    """Return `(suite, suite_instances, suite_label)` sorted by instance count descending."""
+    return (
+        suite_counts_df(df)
+        .rename({"instances": "suite_instances"})
+        .with_columns(
+            (
+                pl.col("suite")
+                + " (n="
+                + pl.col("suite_instances").map_elements(lambda n: f"{n:,}", return_dtype=pl.String)
+                + ")"
+            ).alias("suite_label")
+        )
     )
 
 
@@ -634,12 +467,7 @@ def extractor_summary_df(df: pl.DataFrame) -> pl.DataFrame:
             pl.len().alias("benchmarks"),
             (pl.col("micros").sum() / 1_000.0).alias("total_ms"),
             pl.col("micros").median().alias("median_us"),
-            pl.max_horizontal(pl.col("micros"), pl.lit(1))
-            .cast(pl.Float64)
-            .log()
-            .mean()
-            .exp()
-            .alias("geomean_us"),
+            _geomean(_clamp_micros()).alias("geomean_us"),
             pl.col("tree").sum().alias("total_tree_cost"),
             pl.col("dag").sum().alias("total_dag_cost"),
         )
@@ -650,19 +478,12 @@ def extractor_summary_df(df: pl.DataFrame) -> pl.DataFrame:
 def speedup_vs_baseline_df(df: pl.DataFrame, baseline: str) -> pl.DataFrame:
     """Compute per-benchmark speedup of each non-baseline extractor against `baseline`."""
     base_times = df.filter(pl.col("extractor") == baseline).select(
-        "name",
-        "roots",
-        pl.max_horizontal(pl.col("micros"), pl.lit(1)).cast(pl.Float64).alias("base_micros"),
+        "name", "roots", _clamp_micros().alias("base_micros")
     )
     return (
         df.filter(pl.col("extractor") != baseline)
         .join(base_times, on=["name", "roots"], how="inner")
-        .with_columns(
-            (
-                pl.col("base_micros")
-                / pl.max_horizontal(pl.col("micros"), pl.lit(1)).cast(pl.Float64)
-            ).alias("speedup_vs_base")
-        )
+        .with_columns((pl.col("base_micros") / _clamp_micros()).alias("speedup_vs_base"))
     )
 
 
@@ -673,103 +494,144 @@ def suite_extractor_summary_df(df: pl.DataFrame, baseline: str) -> pl.DataFrame:
     - `total_runtime_ratio` < 1 means less cumulative suite time than `baseline` (`tot / base_tot`).
     - `fastest_rate` is the % of benchmarks in the suite where the extractor achieved min runtime.
     """
-    clamped = df.with_columns(
-        pl.max_horizontal(pl.col("micros"), pl.lit(1)).cast(pl.Float64).alias("_micros_c")
-    )
+    clamped = df.with_columns(_clamp_micros().alias("_micros_c"))
     inst_best = clamped.group_by("name", "roots").agg(pl.col("micros").min().alias("_min_micros"))
     base_inst = clamped.filter(pl.col("extractor") == baseline).select(
         "name", "roots", pl.col("_micros_c").alias("_base_micros_c")
     )
-    enriched = (
+    agg = (
         clamped.join(inst_best, on=["name", "roots"], how="inner")
         .join(base_inst, on=["name", "roots"], how="left")
-        .with_columns(
-            (pl.col("micros") == pl.col("_min_micros")).alias("_is_fastest"),
-            (pl.col("_base_micros_c") / pl.col("_micros_c")).alias("_speedup_vs_base"),
+        .group_by("suite", "extractor")
+        .agg(
+            pl.len().alias("instances"),
+            (pl.col("micros").sum() / 1_000.0).alias("total_ms"),
+            pl.col("micros").sum().alias("_total_micros"),
+            pl.col("micros").median().alias("median_us"),
+            _geomean(pl.col("_micros_c")).alias("geomean_us"),
+            _geomean(
+                (pl.col("_base_micros_c") / pl.col("_micros_c")).filter(
+                    pl.col("_base_micros_c").is_not_null()
+                )
+            ).alias("geomean_speedup"),
+            (100.0 * (pl.col("micros") == pl.col("_min_micros")).mean()).alias("fastest_rate"),
         )
     )
-
-    suite_inst_counts = suite_counts_df(df).rename({"instances": "suite_instances"})
-    agg = enriched.group_by("suite", "extractor").agg(
-        pl.len().alias("instances"),
-        (pl.col("micros").sum() / 1_000.0).alias("total_ms"),
-        pl.col("micros").sum().alias("total_micros"),
-        pl.col("micros").median().alias("median_us"),
-        pl.col("_micros_c").log().mean().exp().alias("geomean_us"),
-        pl.col("_speedup_vs_base")
-        .filter(pl.col("_speedup_vs_base").is_not_null())
-        .log()
-        .mean()
-        .exp()
-        .alias("geomean_speedup"),
-        (100.0 * pl.col("_is_fastest").mean()).alias("fastest_rate"),
-    )
-
     base_totals = agg.filter(pl.col("extractor") == baseline).select(
-        "suite",
-        pl.max_horizontal(pl.col("total_micros"), pl.lit(1))
-        .cast(pl.Float64)
-        .alias("_base_total_micros"),
+        "suite", _clamp_micros("_total_micros").alias("_base_total_micros")
     )
     return (
         agg.join(base_totals, on="suite", how="left")
-        .join(suite_inst_counts, on="suite", how="left")
+        .join(suite_labels_df(df), on="suite", how="left")
         .with_columns(
-            (
-                pl.max_horizontal(pl.col("total_micros"), pl.lit(1)).cast(pl.Float64)
-                / pl.col("_base_total_micros")
-            ).alias("total_runtime_ratio"),
-            (
-                pl.col("suite")
-                + " (n="
-                + pl.col("suite_instances").map_elements(lambda n: f"{n:,}", return_dtype=pl.String)
-                + ")"
-            ).alias("suite_label"),
+            (_clamp_micros("_total_micros") / pl.col("_base_total_micros")).alias(
+                "total_runtime_ratio"
+            )
         )
-        .drop("total_micros", "_base_total_micros")
+        .drop("_total_micros", "_base_total_micros")
         .sort(["suite_instances", "suite", "extractor"], descending=[True, False, False])
     )
 
 
-def cost_comparison_df(df: pl.DataFrame, baseline: str) -> pl.DataFrame:
-    """Compare tree and DAG costs of each non-baseline extractor against `baseline`."""
-    base_costs = df.filter(pl.col("extractor") == baseline).select(
-        "name", "roots", pl.col("tree").alias("base_tree"), pl.col("dag").alias("base_dag")
+# --- Pairwise Comparisons ---
+
+
+def pairwise_comparison_df(
+    df: pl.DataFrame,
+    e1: str,
+    e2: str,
+    *,
+    min_enodes: int | None = None,
+    min_enodes_pct: float | None = None,
+    min_eclasses: int | None = None,
+    min_eclasses_pct: float | None = None,
+) -> pl.DataFrame:
+    """Join two extractors on (name, roots) and compute speedups, winners, and cost ratios.
+
+    `speedup` is `max(micros_2, 1) / max(micros_1, 1)` (> 1 means `e1` is faster).
+    `micros_ratio` is `max(micros_1, 1) / max(micros_2, 1)` (< 1 means `e1` is faster).
+    """
+    meta_cols = [c for c in df.columns if c not in _NON_META_COLS]
+    d1 = df.filter(pl.col("extractor") == e1).select(
+        *meta_cols,
+        pl.col("micros").alias("micros_1"),
+        pl.col("tree").alias("tree_1"),
+        pl.col("dag").alias("dag_1"),
     )
+    d2 = df.filter(pl.col("extractor") == e2).select(
+        "name",
+        "roots",
+        pl.col("micros").alias("micros_2"),
+        pl.col("tree").alias("tree_2"),
+        pl.col("dag").alias("dag_2"),
+    )
+
+    joined = filter_egraph_stats(
+        d1.join(d2, on=["name", "roots"], how="inner"),
+        min_enodes=min_enodes,
+        min_enodes_pct=min_enodes_pct,
+        min_eclasses=min_eclasses,
+        min_eclasses_pct=min_eclasses_pct,
+    )
+    t1c, t2c = _clamp_micros("micros_1"), _clamp_micros("micros_2")
+
+    return joined.with_columns(
+        (t2c / t1c).alias("speedup"),
+        (t1c / t2c).alias("micros_ratio"),
+        pl.when(t1c < t2c)
+        .then(pl.lit(e1))
+        .when(t2c < t1c)
+        .then(pl.lit(e2))
+        .otherwise(pl.lit("tie"))
+        .alias("winner"),
+        pl.when(t1c < t2c)
+        .then(t2c / t1c)
+        .when(t2c < t1c)
+        .then(t1c / t2c)
+        .otherwise(pl.lit(1.0))
+        .alias("winner_ratio"),
+        _safe_cost_ratio("tree_1", "tree_2").alias("tree_ratio"),
+        _safe_cost_ratio("dag_1", "dag_2").alias("dag_ratio"),
+        (pl.col("tree_1") - pl.col("tree_2")).alias("tree_diff"),
+        (pl.col("dag_1") - pl.col("dag_2")).alias("dag_diff"),
+    )
+
+
+def all_pairs_summary_df(df: pl.DataFrame) -> pl.DataFrame:
+    """Compute pairwise geometric means, quantiles, and win rates for all extractor pairs.
+
+    For each ordered pair (e1, e2):
+    - `geomean_speedup` > 1 means `e1` is faster than `e2` (geomean of e2/e1).
+    - `geomean_micros_ratio` < 1 means `e1` is faster than `e2` (geomean of e1/e2).
+    """
+    base = df.select("name", "roots", "extractor", _clamp_micros().alias("t"), "tree", "dag")
+    left = base.rename({"extractor": "e1", "t": "t1", "tree": "tree_1", "dag": "dag_1"})
+    right = base.rename({"extractor": "e2", "t": "t2", "tree": "tree_2", "dag": "dag_2"})
+
     return (
-        df.filter(pl.col("extractor") != baseline)
-        .join(base_costs, on=["name", "roots"], how="inner")
+        left.join(right, on=["name", "roots"], how="inner")
         .with_columns(
-            (pl.col("tree") - pl.col("base_tree")).abs().alias("abs_tree_diff"),
-            (pl.col("dag") - pl.col("base_dag")).abs().alias("abs_dag_diff"),
-            _safe_cost_ratio("tree", "base_tree").alias("tree_ratio"),
-            _safe_cost_ratio("dag", "base_dag").alias("dag_ratio"),
+            (pl.col("t2") / pl.col("t1")).alias("speedup"),
+            (pl.col("t1") / pl.col("t2")).alias("micros_ratio"),
+            _safe_cost_ratio("tree_1", "tree_2").alias("tree_ratio"),
+            _safe_cost_ratio("dag_1", "dag_2").alias("dag_ratio"),
         )
-    )
-
-
-def cost_summary_df(df: pl.DataFrame, baseline: str) -> pl.DataFrame:
-    """Summarize tree and DAG cost differences and geomean ratios vs. `baseline`."""
-    cost_cmp = cost_comparison_df(df, baseline)
-    return (
-        cost_cmp.group_by("extractor")
+        .group_by("e1", "e2")
         .agg(
-            (pl.col("abs_tree_diff") > 1e-9).sum().alias("tree_diffs"),
-            (pl.col("abs_dag_diff") > 1e-9).sum().alias("dag_diffs"),
-            pl.col("tree_ratio")
-            .filter(pl.col("tree_ratio") > 0)
-            .log()
-            .mean()
-            .exp()
-            .alias("geomean_tree_ratio"),
-            pl.col("dag_ratio")
-            .filter(pl.col("dag_ratio") > 0)
-            .log()
-            .mean()
-            .exp()
-            .alias("geomean_dag_ratio"),
+            pl.len().alias("n_benchmarks"),
+            _geomean(pl.col("speedup")).alias("geomean_speedup"),
+            _geomean(pl.col("micros_ratio")).alias("geomean_micros_ratio"),
+            pl.col("speedup").quantile(0.25).alias("q25_speedup"),
+            pl.col("speedup").median().alias("median_speedup"),
+            pl.col("speedup").quantile(0.75).alias("q75_speedup"),
+            _positive_finite_geomean(pl.col("tree_ratio")).alias("geomean_tree_ratio"),
+            _positive_finite_geomean(pl.col("dag_ratio")).alias("geomean_dag_ratio"),
+            ((pl.col("tree_1") - pl.col("tree_2")).abs() > 1e-9).sum().alias("tree_diffs"),
+            ((pl.col("dag_1") - pl.col("dag_2")).abs() > 1e-9).sum().alias("dag_diffs"),
+            (100.0 * (pl.col("t1") < pl.col("t2")).mean()).alias("e1_win_rate"),
+            (100.0 * (pl.col("t1") == pl.col("t2")).mean()).alias("tie_rate"),
         )
-        .sort("extractor")
+        .sort("e1", "e2")
     )
 
 
@@ -812,7 +674,7 @@ def summarize_pair(pair_df: pl.DataFrame, e1: str, e2: str) -> PairSummary:
         (pl.col("winner") == e1).sum().alias("e1_wins"),
         (pl.col("winner") == e2).sum().alias("e2_wins"),
         (pl.col("winner") == "tie").sum().alias("ties"),
-        pl.col("speedup").log().mean().exp().alias("gm_speedup"),
+        _geomean(pl.col("speedup")).alias("gm_speedup"),
         pl.col("speedup").median().alias("med_speedup"),
         pl.col("speedup").quantile(0.25).alias("q25_speedup"),
         pl.col("speedup").quantile(0.75).alias("q75_speedup"),
@@ -840,9 +702,7 @@ def top_outliers_df(
     top_losses = pair_df.filter(pl.col("winner") == e2).sort("speedup").head(top_n)
 
     def shorten(label: str) -> str:
-        if len(label) <= max_label_len:
-            return label
-        return "..." + label[-(max_label_len - 3) :]
+        return label if len(label) <= max_label_len else "..." + label[-(max_label_len - 3) :]
 
     outliers = (
         pl.concat([top_wins, top_losses])
@@ -858,6 +718,69 @@ def top_outliers_df(
         .otherwise(pl.col("short_label"))
         .alias("short_label")
     )
+
+
+def pair_table_df(
+    pair_df: pl.DataFrame,
+    e1: str,
+    e2: str,
+    *,
+    sort_by: str = "ratio_x",
+    descending: bool = True,
+    head: int | None = None,
+) -> pl.DataFrame:
+    """Format a pairwise comparison DataFrame as a compact per-benchmark table."""
+    cols: list[pl.Expr | str] = [
+        "label",
+        "winner",
+        pl.col("winner_ratio").round(2).alias("ratio_x"),
+        pl.col("micros_1").alias(f"{e1}_us"),
+        pl.col("micros_2").alias(f"{e2}_us"),
+    ]
+    for col, round_digits in (
+        ("reach_enodes", None),
+        ("reach_enodes_pct", 1),
+        ("reach_eclasses", None),
+        ("reach_eclasses_pct", 1),
+    ):
+        if col in pair_df.columns:
+            cols.append(col if round_digits is None else pl.col(col).round(round_digits).alias(col))
+
+    table = pair_df.select(cols).sort(sort_by, descending=descending)
+    return table.head(head) if head is not None else table
+
+
+def pair_feature_correlations_df(
+    pair_df: pl.DataFrame, *, features: Mapping[str, str] = STRUCTURE_FEATURES
+) -> pl.DataFrame:
+    """Compute Spearman rank correlation between each structural feature and pairwise speedup."""
+    rows: list[dict[str, Any]] = []
+    for col, label in features.items():
+        if col not in pair_df.columns:
+            continue
+        valid = pair_df.filter(pl.col(col).is_not_null() & pl.col(col).cast(pl.Float64).is_finite())
+        if valid.height < 3 or valid[col].n_unique() < 2:
+            continue
+        corr = valid.select(
+            pl.corr(pl.col(col).cast(pl.Float64), pl.col("speedup"), method="spearman")
+        ).item()
+        if isinstance(corr, int | float) and not math.isnan(corr):
+            rows.append(
+                {"feature": col, "label": label, "spearman_r": float(corr), "n_valid": valid.height}
+            )
+    if not rows:
+        return pl.DataFrame(
+            schema={
+                "feature": pl.String,
+                "label": pl.String,
+                "spearman_r": pl.Float64,
+                "n_valid": pl.Int64,
+            }
+        )
+    return pl.DataFrame(rows).sort("spearman_r")
+
+
+# --- Sanity Checks ---
 
 
 def tree_cost_mismatches_df(
@@ -894,6 +817,37 @@ def tree_cost_mismatches_df(
     )
 
 
+def _display_banner(msg: str, *, error: bool) -> None:
+    try:
+        from IPython.core.getipython import get_ipython
+        from IPython.display import HTML, display
+
+        if get_ipython() is not None:
+            if error:
+                style = (
+                    "padding:14px 18px;border:2px solid #b71c1c;border-left:8px solid #b71c1c;"
+                    "background:#fdecea;color:#7f0000;font-size:15px;font-weight:700;"
+                    "border-radius:4px"
+                )
+                prefix = "&#9888;&#65039; "
+            else:
+                style = (
+                    "padding:10px 14px;border-left:5px solid #2e7d32;background:#edf7ed;"
+                    "color:#1b5e20;font-weight:500;border-radius:4px"
+                )
+                prefix = "&#10004; "
+            display(HTML(f"<div style='{style}'>{prefix}{msg}</div>"))
+            return
+    except ImportError:
+        pass
+
+    if error:
+        border = "!" * max(len(msg) + 8, 60)
+        print(f"\n{border}\n!!! {msg} !!!\n{border}\n", file=sys.stderr)
+    else:
+        print(f"OK: {msg}")
+
+
 def check_tree_extractors(
     df: pl.DataFrame, *, extractors: Sequence[str] = TREE_EXTRACTORS, tol: float = 1e-9
 ) -> pl.DataFrame | None:
@@ -910,111 +864,17 @@ def check_tree_extractors(
         else 0
     )
 
-    try:
-        from IPython.core.getipython import get_ipython
-        from IPython.display import HTML, display
-
-        in_notebook = get_ipython() is not None
-    except ImportError:
-        in_notebook = False
-        HTML = None
-        display = None
-
     if mismatches.is_empty():
-        msg = (
+        _display_banner(
             f"Tree cost sanity check passed: all {len(present)} tree extractors "
-            f"({', '.join(present)}) agree across {n_instances:,} benchmarks."
+            f"({', '.join(present)}) agree across {n_instances:,} benchmarks.",
+            error=False,
         )
-        if in_notebook and display is not None and HTML is not None:
-            display(
-                HTML(
-                    "<div style='padding:10px 14px;border-left:5px solid #2e7d32;"
-                    "background:#edf7ed;color:#1b5e20;font-weight:500;border-radius:4px'>"
-                    f"&#10004; {msg}</div>"
-                )
-            )
-        else:
-            print(f"OK: {msg}")
         return None
 
-    banner = (
+    _display_banner(
         f"TREE COST MISMATCH DETECTED: {mismatches.height:,} / {n_instances:,} benchmarks "
-        f"differ across tree extractors ({', '.join(present)})!"
+        f"differ across tree extractors ({', '.join(present)})!",
+        error=True,
     )
-    if in_notebook and display is not None and HTML is not None:
-        display(
-            HTML(
-                "<div style='padding:14px 18px;border:2px solid #b71c1c;"
-                "border-left:8px solid #b71c1c;background:#fdecea;color:#7f0000;"
-                "font-size:15px;font-weight:700;border-radius:4px'>"
-                f"&#9888;&#65039; {banner}</div>"
-            )
-        )
-    else:
-        border = "!" * max(len(banner) + 8, 60)
-        print(f"\n{border}\n!!! {banner} !!!\n{border}\n", file=sys.stderr)
     return mismatches
-
-
-def pair_table_df(
-    pair_df: pl.DataFrame,
-    e1: str,
-    e2: str,
-    *,
-    sort_by: str = "ratio_x",
-    descending: bool = True,
-    head: int | None = None,
-) -> pl.DataFrame:
-    """Format a pairwise comparison DataFrame as a compact per-benchmark table."""
-    cols: list[pl.Expr | str] = [
-        "label",
-        "winner",
-        pl.col("winner_ratio").round(2).alias("ratio_x"),
-        pl.col("micros_1").alias(f"{e1}_us"),
-        pl.col("micros_2").alias(f"{e2}_us"),
-    ]
-    if "reach_enodes" in pair_df.columns:
-        cols.append("reach_enodes")
-    if "reach_enodes_pct" in pair_df.columns:
-        cols.append(pl.col("reach_enodes_pct").round(1).alias("reach_enodes_pct"))
-    if "reach_eclasses" in pair_df.columns:
-        cols.append("reach_eclasses")
-    if "reach_eclasses_pct" in pair_df.columns:
-        cols.append(pl.col("reach_eclasses_pct").round(1).alias("reach_eclasses_pct"))
-
-    table = pair_df.select(cols).sort(sort_by, descending=descending)
-    return table.head(head) if head is not None else table
-
-
-def pair_feature_correlations_df(
-    pair_df: pl.DataFrame, *, features: Mapping[str, str] = STRUCTURE_FEATURES
-) -> pl.DataFrame:
-    """Compute Spearman rank correlation between each structural feature and pairwise speedup."""
-    rows: list[dict[str, Any]] = []
-    for col, label in features.items():
-        if col not in pair_df.columns:
-            continue
-        valid = pair_df.filter(pl.col(col).is_not_null() & pl.col(col).cast(pl.Float64).is_finite())
-        if valid.height < 3:
-            continue
-        # Constant features have undefined Spearman correlation
-        if valid[col].n_unique() < 2:
-            continue
-        corr = valid.select(
-            pl.corr(pl.col(col).cast(pl.Float64), pl.col("speedup"), method="spearman")
-        ).item()
-        if not isinstance(corr, int | float) or math.isnan(corr):
-            continue
-        rows.append(
-            {"feature": col, "label": label, "spearman_r": float(corr), "n_valid": valid.height}
-        )
-    if not rows:
-        return pl.DataFrame(
-            schema={
-                "feature": pl.String,
-                "label": pl.String,
-                "spearman_r": pl.Float64,
-                "n_valid": pl.Int64,
-            }
-        )
-    return pl.DataFrame(rows).sort("spearman_r")
