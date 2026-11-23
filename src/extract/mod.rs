@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 pub use crate::*;
 
+pub mod a_star_interleaved;
+pub mod a_star_two_phase;
 pub mod bottom_up;
 pub mod faster_bottom_up;
 pub mod faster_greedy_dag;
@@ -15,8 +17,6 @@ pub mod greedy_dag;
 pub mod ilp_cbc;
 pub mod prio_queue;
 pub mod uniform_cost_search;
-pub mod a_star_two_phase;
-pub mod a_star_interleaved;
 
 // Allowance for floating point values to be considered equal
 pub const EPSILON_ALLOWANCE: f64 = 0.00001;

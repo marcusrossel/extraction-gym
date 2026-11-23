@@ -9,15 +9,15 @@ use super::*;
 #[derive(PartialEq, Eq)]
 enum ActionTag {
     Visit,
-    Assign
+    Assign,
 }
 
 // An action scheduled by the queue. The e-class of its e-node is not stored, as it is looked up
 // when the action is dequeued (see `InterleavedAStarExt::run`).
 #[derive(PartialEq, Eq)]
 struct Action<'a> {
-    tag:  ActionTag,
-    node: &'a NodeId
+    tag: ActionTag,
+    node: &'a NodeId,
 }
 
 // The state associated with an e-node over the course of the extraction. As an e-node's bottom-up
@@ -27,14 +27,14 @@ enum NodeState {
     // The number of child e-classes which have not yet been assigned a minimal e-node.
     Delay(usize),
     // The bottom-up cost of the e-node, which is set when its assignment-action is enqueued.
-    Resolved(Cost)
+    Resolved(Cost),
 }
 
 impl NodeState {
     fn cost(&self) -> Cost {
         match self {
             NodeState::Resolved(cost) => *cost,
-            NodeState::Delay(_)       => panic!("Accessed the cost of an unresolved e-node.")
+            NodeState::Delay(_) => panic!("Accessed the cost of an unresolved e-node."),
         }
     }
 }
@@ -47,21 +47,21 @@ enum EqcStatus<'a> {
     Parents(Vec<&'a NodeId>),
     // The bottom-up cost of the e-class' minimal e-node, which is set when the e-class is assigned
     // one.
-    Resolved(Cost)
+    Resolved(Cost),
 }
 
 impl<'a> EqcStatus<'a> {
     fn cost(&self) -> Cost {
         match self {
             EqcStatus::Resolved(cost) => *cost,
-            EqcStatus::Parents(_)     => panic!("Accessed the cost of an unresolved e-class.")
+            EqcStatus::Parents(_) => panic!("Accessed the cost of an unresolved e-class."),
         }
     }
 
     fn parents_mut(&mut self) -> &mut Vec<&'a NodeId> {
         match self {
             EqcStatus::Parents(parents) => parents,
-            EqcStatus::Resolved(_)      => panic!("Accessed the parents of a resolved e-class.")
+            EqcStatus::Resolved(_) => panic!("Accessed the parents of a resolved e-class."),
         }
     }
 }
@@ -72,15 +72,15 @@ struct EqcState<'a> {
     // The top-down cost by which the e-class was reached. This is set when the e-class' visit is
     // enqueued, and never changes afterwards.
     td_cost: Cost,
-    status:  EqcStatus<'a>
+    status: EqcStatus<'a>,
 }
 
 struct InterleavedAStarExt<'a> {
-    egraph:     &'a EGraph,
-    queue:      PrioQueue<Action<'a>, Cost>,
+    egraph: &'a EGraph,
+    queue: PrioQueue<Action<'a>, Cost>,
     node_state: FxHashMap<&'a NodeId, NodeState>,
-    eqc_state:  FxHashMap<&'a ClassId, EqcState<'a>>,
-    eqc_min:    IndexMap<ClassId, NodeId>
+    eqc_state: FxHashMap<&'a ClassId, EqcState<'a>>,
+    eqc_min: IndexMap<ClassId, NodeId>,
 }
 
 // Like `ExtractionResult::node_sum_cost`.
@@ -92,21 +92,25 @@ fn node_cost(egraph: &EGraph, node: &NodeId, child_costs: &[Cost]) -> Cost {
 // resolved. This is a free function, so that it can be called while `InterleavedAStarExt::node_state` is
 // mutably borrowed.
 fn node_child_costs<'a>(
-    egraph: &'a EGraph, eqc_state: &FxHashMap<&'a ClassId, EqcState<'a>>, node: &'a NodeId
+    egraph: &'a EGraph,
+    eqc_state: &FxHashMap<&'a ClassId, EqcState<'a>>,
+    node: &'a NodeId,
 ) -> Vec<Cost> {
-    egraph[node].children.iter().map(|child| {
-        eqc_state[egraph.nid_to_cid(child)].status.cost()
-    }).collect()
+    egraph[node]
+        .children
+        .iter()
+        .map(|child| eqc_state[egraph.nid_to_cid(child)].status.cost())
+        .collect()
 }
 
 impl<'a> InterleavedAStarExt<'a> {
     fn new(egraph: &'a EGraph) -> InterleavedAStarExt<'a> {
         InterleavedAStarExt {
             egraph,
-            queue:      PrioQueue::new(),
+            queue: PrioQueue::new(),
             node_state: Default::default(),
-            eqc_state:  Default::default(),
-            eqc_min:    Default::default()
+            eqc_state: Default::default(),
+            eqc_min: Default::default(),
         }
     }
 
@@ -124,20 +128,33 @@ impl<'a> InterleavedAStarExt<'a> {
 
     fn enqueue_visit_node(&mut self, node: &'a NodeId, td_cost: Cost) {
         let top_down_cost = td_cost + self.egraph[node].cost;
-        let action = Action { tag: ActionTag::Visit, node };
+        let action = Action {
+            tag: ActionTag::Visit,
+            node,
+        };
         self.enqueue(action, top_down_cost);
     }
 
     fn enqueue_assignment(&mut self, node: &'a NodeId, td_cost: Cost, child_costs: Vec<Cost>) {
         let bottom_up_cost = node_cost(self.egraph, node, &child_costs);
-        self.node_state.insert(node, NodeState::Resolved(bottom_up_cost));
+        self.node_state
+            .insert(node, NodeState::Resolved(bottom_up_cost));
         let merit = td_cost + bottom_up_cost;
-        let action = Action { tag: ActionTag::Assign, node };
+        let action = Action {
+            tag: ActionTag::Assign,
+            node,
+        };
         self.enqueue(action, merit);
     }
 
     fn enqueue_visit_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost, parents: Vec<&'a NodeId>) {
-        self.eqc_state.insert(eqc, EqcState { td_cost, status: EqcStatus::Parents(parents) });
+        self.eqc_state.insert(
+            eqc,
+            EqcState {
+                td_cost,
+                status: EqcStatus::Parents(parents),
+            },
+        );
         let egraph = self.egraph;
         for node in &egraph.classes()[eqc].nodes {
             // Visiting a leaf does nothing but enqueue its assignment-action, so we enqueue that
@@ -165,16 +182,21 @@ impl<'a> InterleavedAStarExt<'a> {
             let child = egraph.nid_to_cid(child);
             // It is important that we do not register the same e-class as delayed multiple times,
             // as this would break the delay count.
-            if delayed_eqcs.contains(child) { continue }
+            if delayed_eqcs.contains(child) {
+                continue;
+            }
             match self.eqc_state.get_mut(child) {
                 // (1) If the child e-class is already resolved, there's nothing to do (its cost is
                 //     fetched after the loop, if needed).
-                Some(EqcState { status: EqcStatus::Resolved(_), .. }) => continue,
+                Some(EqcState {
+                    status: EqcStatus::Resolved(_),
+                    ..
+                }) => continue,
                 // (2) If it is not resolved, record `node` as its parent - reaching it with `node`
                 //     as its only parent, if it has not been reached yet - and register it as
                 //     delayed (the node delay is set after the loop).
                 Some(state) => state.status.parents_mut().push(node),
-                None        => self.enqueue_visit_eqc(child, node_td_cost, vec![node])
+                None => self.enqueue_visit_eqc(child, node_td_cost, vec![node]),
             }
             delayed_eqcs.insert(child);
         }
@@ -196,7 +218,12 @@ impl<'a> InterleavedAStarExt<'a> {
         // The remaining fields are destructured, so that the borrow checker sees the accesses to
         // the maps below as disjoint. This allows `node_state` to be updated in place, while the
         // other maps are being read.
-        let Self { queue, node_state, eqc_state, .. } = self;
+        let Self {
+            queue,
+            node_state,
+            eqc_state,
+            ..
+        } = self;
         for parent in parents {
             let state = node_state.get_mut(parent).expect(BAD_PATH);
             match state {
@@ -206,16 +233,24 @@ impl<'a> InterleavedAStarExt<'a> {
                     // enqueue an assignment-action for it. Its state then simply stays at
                     // `Delay(1)`, as it is never looked at again.
                     let parent_eqc_state = &eqc_state[egraph.nid_to_cid(parent)];
-                    if let EqcStatus::Resolved(_) = parent_eqc_state.status { continue }
+                    if let EqcStatus::Resolved(_) = parent_eqc_state.status {
+                        continue;
+                    }
                     let top_down_cost = parent_eqc_state.td_cost;
                     let child_costs = node_child_costs(egraph, eqc_state, parent);
                     let bottom_up_cost = node_cost(egraph, parent, &child_costs);
                     let merit = top_down_cost + bottom_up_cost;
                     *state = NodeState::Resolved(bottom_up_cost);
-                    queue.insert(Action { tag: ActionTag::Assign, node: parent }, merit);
-                },
+                    queue.insert(
+                        Action {
+                            tag: ActionTag::Assign,
+                            node: parent,
+                        },
+                        merit,
+                    );
+                }
                 NodeState::Delay(delay) if *delay > 1 => *delay -= 1,
-                _ => panic!("{}", BAD_PATH)
+                _ => panic!("{}", BAD_PATH),
             }
         }
     }
@@ -238,20 +273,22 @@ impl<'a> InterleavedAStarExt<'a> {
             // an e-class which already has the `Resolved` status has been assigned a minimal e-node
             // before. Thus, no separate map is needed to detect this.
             let parents = match &mut state.status {
-                EqcStatus::Resolved(_)      => continue,
-                EqcStatus::Parents(parents) => parents
+                EqcStatus::Resolved(_) => continue,
+                EqcStatus::Parents(parents) => parents,
             };
             match tag {
                 // Only branch nodes get visit-actions (see `enqueue_visit_eqc`).
                 ActionTag::Visit => {
                     let td_cost = state.td_cost;
                     self.visit_node(node, td_cost);
-                },
+                }
                 ActionTag::Assign => {
                     let parents = mem::take(parents);
                     state.status = EqcStatus::Resolved(self.node_state[node].cost());
                     self.eqc_min.insert(eqc.clone(), node.clone());
-                    if eqc == target { break }
+                    if eqc == target {
+                        break;
+                    }
                     self.update_parents(parents);
                 }
             }
@@ -271,7 +308,9 @@ impl Extractor for InterleavedAStarExtractor {
         let target = &roots[0];
         let mut ext = InterleavedAStarExt::new(egraph);
         ext.run(target);
-        ExtractionResult { choices: ext.eqc_min }
+        ExtractionResult {
+            choices: ext.eqc_min,
+        }
     }
 }
 

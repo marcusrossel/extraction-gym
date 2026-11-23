@@ -140,11 +140,11 @@ fn extractors() -> IndexMap<&'static str, ExtractorDetail> {
 // A `Benchmark` collects all of the information necessary to run a single given extractor on a
 // single given e-graph (see `Benchmark::run`).
 struct Benchmark<'a> {
-    extractor_name:   String,
+    extractor_name: String,
     extractor_detail: &'a ExtractorDetail,
-    egraph:           EGraph,
-    out_filename:     PathBuf,
-    filename:         String,
+    egraph: EGraph,
+    out_filename: PathBuf,
+    filename: String,
 }
 
 impl<'a> Benchmark<'a> {
@@ -163,15 +163,21 @@ impl<'a> Benchmark<'a> {
 
         let filename = &self.filename;
         let extractor_name = &self.extractor_name;
-        let roots_str = roots.iter().map(|r| format!("\"{r}\"")).collect::<Vec<_>>().join(", ");
+        let roots_str = roots
+            .iter()
+            .map(|r| format!("\"{r}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
         log::info!("{filename:40}\t{extractor_name:10}\t{tree:5}\t{dag:5}\t{us:5}");
 
-        format!(r#"    {{
+        format!(
+            r#"    {{
       "roots": [{roots_str}],
       "tree": {tree},
       "dag": {dag},
       "micros": {us}
-    }}"#)
+    }}"#
+        )
     }
 
     fn write_results(&self, entries: &[String]) {
@@ -188,7 +194,8 @@ impl<'a> Benchmark<'a> {
 {entries_str}
   ]
 }}"#
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     fn run(&self) {
@@ -258,7 +265,13 @@ fn main() {
         .with_context(|| format!("Unknown extractor: {extractor_name}"))
         .unwrap();
 
-    let benchmark = Benchmark { extractor_name, extractor_detail, egraph, out_filename, filename };
+    let benchmark = Benchmark {
+        extractor_name,
+        extractor_detail,
+        egraph,
+        out_filename,
+        filename,
+    };
 
     // If the `--single-root` flag is passed, run each benchmark with only a single root e-class.
     // For benchmarks which would have had multiple root e-classes, we break it into multiple
