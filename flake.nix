@@ -32,31 +32,33 @@
         # };
 
         # # Stable with custom components, commented out since we pinned to 1.87
-        # toolchain = fenix.packages.${system}.stable.withComponents [
-        #   "cargo"
-        #   "rustc"
-        #   "rust-src"
-        #   "rustfmt"
-        #   "clippy"
-        #   "rust-analyzer"
-        # ];
+        toolchain = fenix.packages.${system}.stable.withComponents [
+          "cargo"
+          "rustc"
+          "rust-src"
+          "rustfmt"
+          "clippy"
+          "rust-analyzer"
+        ];
 
-        # Pinned to the channel in ./rust-toolchain.toml
-        toolchain =
-          (fenix.packages.${system}.toolchainOf {
-            channel = "1.87.0";
-            sha256 = "sha256-KUm16pHj+cRedf8vxs/Hd2YWxpOrWZ7UOrwhILdSJBU=";
-          }).withComponents
-            [
-              "cargo"
-              "rustc"
-              "rust-src"
-              "rustfmt"
-              "clippy"
-              "rust-analyzer"
-            ];
+        # # Pinned to the channel in ./rust-toolchain.toml
+        # toolchain =
+        #   (fenix.packages.${system}.toolchainOf {
+        #     channel = "1.87.0";
+        #     sha256 = "sha256-KUm16pHj+cRedf8vxs/Hd2YWxpOrWZ7UOrwhILdSJBU=";
+        #   }).withComponents
+        #     [
+        #       "cargo"
+        #       "rustc"
+        #       "rust-src"
+        #       "rustfmt"
+        #       "clippy"
+        #       "rust-analyzer"
+        #     ];
       in
       {
+        formatter = pkgs.nixfmt;
+
         devShells.default = pkgs.mkShell {
           nativeBuildInputs = [
             toolchain
