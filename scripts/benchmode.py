@@ -17,7 +17,7 @@ import tempfile
 from collections.abc import Generator, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 CPU_DIR = Path("/sys/devices/system/cpu")
 PSTATE_STATUS = CPU_DIR / "amd_pstate" / "status"
@@ -143,6 +143,16 @@ def isolated_cpu() -> Generator[tuple[int, int]]:
             signal.signal(signal.SIGTERM, prev_term)
 
 
+def _exec_with_env(env_file: Path, cpu_str: str, cmd: Sequence[str]) -> NoReturn:
+    user_env: dict[str, str] = json.loads(env_file.read_text())
+    user_env["BENCHMODE"] = "1"
+    user_env["BENCHMODE_CPUS"] = cpu_str
+    try:
+        os.execvpe(cmd[0], list(cmd), user_env)
+    except OSError as exc:
+        sys.exit(f"benchmode: failed to exec {cmd[0]}: {exc}")
+
+
 def _run_wrapped(env_file: Path, cmd: Sequence[str]) -> int:
     if os.geteuid() != 0:
         print("error: internal benchmode wrapper requires root", file=sys.stderr)
@@ -166,15 +176,6 @@ def _run_wrapped(env_file: Path, cmd: Sequence[str]) -> int:
             file=sys.stderr,
         )
 
-        user_env: dict[str, str] = json.loads(env_file.read_text())
-        user_env["BENCHMODE"] = "1"
-        user_env["BENCHMODE_CPUS"] = cpu_str
-
-        env_bin = shutil.which("env", path=user_env.get("PATH")) or shutil.which("env")
-        if env_bin is None:
-            print("error: could not locate `env` binary", file=sys.stderr)
-            return 1
-
         io_flag = "--pty" if (sys.stdin.isatty() and sys.stdout.isatty()) else "--pipe"
         systemd_run = _which("systemd-run", "/run/current-system/sw/bin/systemd-run")
         run_cmd = [
@@ -190,13 +191,17 @@ def _run_wrapped(env_file: Path, cmd: Sequence[str]) -> int:
             "-p",
             f"AllowedCPUs={cpu_str}",
             "--",
-            env_bin,
-            "-i",
-            *[f"{k}={v}" for k, v in user_env.items()],
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--_exec",
+            str(env_file),
+            cpu_str,
             *cmd,
         ]
+        # Prevent systemd-run --pty from emitting OSC 0 terminal title sequences.
+        systemd_env = {**os.environ, "SYSTEMD_ADJUST_TERMINAL_TITLE": "0"}
         try:
-            return subprocess.run(run_cmd, check=False).returncode
+            return subprocess.run(run_cmd, env=systemd_env, check=False).returncode
         except KeyboardInterrupt:
             return 130
 
@@ -232,6 +237,10 @@ def _elevate(cmd: Sequence[str]) -> int:
 
 def main(argv: Sequence[str] | None = None) -> None:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] == ["--_exec"]:
+        if len(args) < 4:
+            sys.exit("error: internal --_exec requires env file, CPU string, and command")
+        _exec_with_env(Path(args[1]), args[2], args[3:])
     if args[:1] == ["--_wrap"]:
         if len(args) < 3:
             sys.exit("error: internal --_wrap requires env file and command")
