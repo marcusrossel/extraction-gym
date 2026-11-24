@@ -5,7 +5,9 @@ use std::collections::HashMap;
 pub use crate::*;
 
 pub mod a_star_interleaved;
+pub mod a_star_interleaved_optimized;
 pub mod a_star_two_phase;
+pub mod a_star_two_phase_optimized;
 pub mod bottom_up;
 pub mod faster_bottom_up;
 pub mod faster_greedy_dag;

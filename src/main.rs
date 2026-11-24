@@ -73,9 +73,46 @@ fn extractors() -> IndexMap<&'static str, ExtractorDetail> {
             },
         ),
         (
+            "a-star-two-phase-optimized",
+            ExtractorDetail {
+                extractor: extract::a_star_two_phase_optimized::TwoPhaseAStarOptimizedExtractor
+                    .boxed(),
+                optimal: Optimal::Tree,
+                use_for_bench: true,
+            },
+        ),
+        (
+            "a-star-two-phase-optimized",
+            ExtractorDetail {
+                extractor: extract::a_star_two_phase_optimized::TwoPhaseAStarOptimizedExtractor
+                    .boxed(),
+                optimal: Optimal::Tree,
+                use_for_bench: true,
+            },
+        ),
+        (
             "a-star-interleaved",
             ExtractorDetail {
                 extractor: extract::a_star_interleaved::InterleavedAStarExtractor.boxed(),
+                optimal: Optimal::Tree,
+                use_for_bench: true,
+            },
+        ),
+        (
+            "a-star-interleaved-optimized",
+            ExtractorDetail {
+                extractor: extract::a_star_interleaved_optimized::InterleavedAStarOptimizedExtractor
+                    .boxed(),
+                optimal: Optimal::Tree,
+                use_for_bench: true,
+            },
+        ),
+        (
+            "a-star-interleaved-optimized",
+            ExtractorDetail {
+                extractor:
+                    extract::a_star_interleaved_optimized::InterleavedAStarOptimizedExtractor
+                        .boxed(),
                 optimal: Optimal::Tree,
                 use_for_bench: true,
             },

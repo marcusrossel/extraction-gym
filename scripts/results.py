@@ -21,7 +21,9 @@ TREE_EXTRACTORS: tuple[str, ...] = (
     "prio-queue",
     "uniform-cost-search",
     "a-star-two-phase",
+    "a-star-two-phase-optimized",
     "a-star-interleaved",
+    "a-star-interleaved-optimized",
 )
 
 STRUCTURE_FEATURES: dict[str, str] = {
