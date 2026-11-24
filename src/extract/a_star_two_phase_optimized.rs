@@ -1,4 +1,3 @@
-use std::collections::hash_map::Entry;
 use std::mem;
 
 use rustc_hash::FxHashMap;
@@ -13,29 +12,11 @@ struct PendingNode {
     cost: Cost,
 }
 
-// Inline parent list avoiding heap allocations for e-classes with 0 or 1 parent.
-enum Parents {
-    Empty,
-    One(u32),
-    Many(Vec<u32>),
-}
-
-impl Parents {
-    #[inline]
-    fn push(&mut self, node: u32) {
-        match self {
-            Parents::Empty => *self = Parents::One(node),
-            Parents::One(first) => *self = Parents::Many(vec![*first, node]),
-            Parents::Many(vec) => vec.push(node),
-        }
-    }
-}
-
 // Whether an e-class has been resolved yet. As an e-class' parents are only needed at the moment
 // it is assigned a minimal e-node, the two states are mutually exclusive.
 enum EqcStatus {
-    Parents(Parents),
-    Resolved(u32),
+    Parents(Vec<u32>),
+    Resolved,
 }
 
 // The state associated with a reached e-class over the course of the extraction.
@@ -64,7 +45,14 @@ impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
         }
     }
 
-    fn enqueue_eqc_nodes(&mut self, eqc: &ClassId, td_cost: Cost) {
+    fn enqueue_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost, parents: Vec<u32>) {
+        self.eqc_state.insert(
+            eqc,
+            EqcState {
+                td_cost,
+                status: EqcStatus::Parents(parents),
+            },
+        );
         let egraph = self.egraph;
         for node_id in &egraph.classes()[eqc].nodes {
             let (idx, _, node) = egraph.nodes.get_full(node_id).unwrap();
@@ -79,18 +67,12 @@ impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
     }
 
     fn add_eqc_parent(&mut self, eqc: &'a ClassId, node: u32, td_cost: Cost) {
-        match self.eqc_state.entry(eqc) {
-            Entry::Occupied(mut e) => match &mut e.get_mut().status {
+        match self.eqc_state.get_mut(eqc) {
+            Some(state) => match &mut state.status {
                 EqcStatus::Parents(parents) => parents.push(node),
-                EqcStatus::Resolved(_) => unreachable!(),
+                EqcStatus::Resolved => unreachable!(),
             },
-            Entry::Vacant(e) => {
-                e.insert(EqcState {
-                    td_cost,
-                    status: EqcStatus::Parents(Parents::One(node)),
-                });
-                self.enqueue_eqc_nodes(eqc, td_cost);
-            }
+            None => self.enqueue_eqc(eqc, td_cost, vec![node]),
         }
     }
 
@@ -112,14 +94,7 @@ impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
 
     fn run(&mut self, target: &'a ClassId) {
         let zero = NotNan::new(0.0).unwrap();
-        self.eqc_state.insert(
-            target,
-            EqcState {
-                td_cost: zero,
-                status: EqcStatus::Parents(Parents::Empty),
-            },
-        );
-        self.enqueue_eqc_nodes(target, zero);
+        self.enqueue_eqc(target, zero, Vec::new());
         while let Some((node, td_cost)) = self.queue.pop() {
             self.visit_children(node, td_cost);
         }
@@ -131,6 +106,7 @@ struct TwoPhaseAStarBottomUpExtractor<'a> {
     eqc_state: FxHashMap<&'a ClassId, EqcState>,
     node_state: FxHashMap<u32, PendingNode>,
     queue: PrioQueue<(u32, Cost), Cost>,
+    eqc_min: IndexMap<ClassId, NodeId>,
 }
 
 impl<'a> TwoPhaseAStarBottomUpExtractor<'a> {
@@ -140,36 +116,26 @@ impl<'a> TwoPhaseAStarBottomUpExtractor<'a> {
             eqc_state: top_down.eqc_state,
             node_state: top_down.node_state,
             queue: top_down.leaves,
+            eqc_min: IndexMap::new(),
         }
     }
 
-    #[inline]
-    fn update_parent(&mut self, parent: u32, resolved_cost: Cost) {
-        let pending = self.node_state.get_mut(&parent).expect(BAD_PATH);
-        pending.cost += resolved_cost;
-        pending.delay -= 1;
-        if pending.delay == 0 {
-            let (_, parent_node) = self.egraph.nodes.get_index(parent as usize).unwrap();
-            let parent_eqc_state = &self.eqc_state[&parent_node.eclass];
-            if let EqcStatus::Resolved(_) = parent_eqc_state.status {
-                return;
-            }
-            let bottom_up_cost = pending.cost;
-            self.queue.insert(
-                (parent, bottom_up_cost),
-                parent_eqc_state.td_cost + bottom_up_cost,
-            );
-        }
-    }
-
-    fn update_parents(&mut self, parents: Parents, resolved_cost: Cost) {
-        match parents {
-            Parents::Empty => {}
-            Parents::One(parent) => self.update_parent(parent, resolved_cost),
-            Parents::Many(parents) => {
-                for parent in parents {
-                    self.update_parent(parent, resolved_cost);
+    fn update_parents(&mut self, parents: Vec<u32>, resolved_cost: Cost) {
+        for parent in parents {
+            let pending = self.node_state.get_mut(&parent).expect(BAD_PATH);
+            pending.cost += resolved_cost;
+            pending.delay -= 1;
+            if pending.delay == 0 {
+                let (_, parent_node) = self.egraph.nodes.get_index(parent as usize).unwrap();
+                let parent_eqc_state = &self.eqc_state[&parent_node.eclass];
+                if let EqcStatus::Resolved = parent_eqc_state.status {
+                    continue;
                 }
+                let bottom_up_cost = pending.cost;
+                self.queue.insert(
+                    (parent, bottom_up_cost),
+                    parent_eqc_state.td_cost + bottom_up_cost,
+                );
             }
         }
     }
@@ -177,13 +143,14 @@ impl<'a> TwoPhaseAStarBottomUpExtractor<'a> {
     fn run(&mut self, target: &ClassId) {
         let egraph = self.egraph;
         while let Some(((node, resolved_cost), _)) = self.queue.pop() {
-            let (_, n) = egraph.nodes.get_index(node as usize).unwrap();
+            let (nid, n) = egraph.nodes.get_index(node as usize).unwrap();
             let eqc = &n.eclass;
             let state = self.eqc_state.get_mut(eqc).expect(BAD_PATH);
-            if matches!(state.status, EqcStatus::Resolved(_)) {
+            if matches!(state.status, EqcStatus::Resolved) {
                 continue;
             }
-            let prev = mem::replace(&mut state.status, EqcStatus::Resolved(node));
+            let prev = mem::replace(&mut state.status, EqcStatus::Resolved);
+            self.eqc_min.insert(eqc.clone(), nid.clone());
             if eqc == target {
                 break;
             }
@@ -191,27 +158,6 @@ impl<'a> TwoPhaseAStarBottomUpExtractor<'a> {
                 self.update_parents(parents, resolved_cost);
             }
         }
-    }
-
-    // Reconstructs `ExtractionResult::choices` for only the e-classes reachable from `target`.
-    fn build_choices(&self, target: &'a ClassId) -> IndexMap<ClassId, NodeId> {
-        let mut choices = IndexMap::new();
-        let mut stack: Vec<&'a ClassId> = vec![target];
-        while let Some(eqc) = stack.pop() {
-            if choices.contains_key(eqc) {
-                continue;
-            }
-            let choice = match self.eqc_state[eqc].status {
-                EqcStatus::Resolved(choice) => choice,
-                EqcStatus::Parents(_) => panic!("{}", BAD_PATH),
-            };
-            let (nid, n) = self.egraph.nodes.get_index(choice as usize).unwrap();
-            choices.insert(eqc.clone(), nid.clone());
-            for child in &n.children {
-                stack.push(self.egraph.nid_to_cid(child));
-            }
-        }
-        choices
     }
 }
 
@@ -230,7 +176,7 @@ impl Extractor for TwoPhaseAStarOptimizedExtractor {
         let mut bottom_up = TwoPhaseAStarBottomUpExtractor::init(top_down);
         bottom_up.run(target);
         ExtractionResult {
-            choices: bottom_up.build_choices(target),
+            choices: bottom_up.eqc_min,
         }
     }
 }
