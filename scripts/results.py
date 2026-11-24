@@ -17,9 +17,14 @@ DEFAULT_OUTPUT_DIR: Path = REPO_ROOT / "output"
 # Extractors expected to produce identical optimal tree costs (matches Optimal::Tree in src/main.rs).
 TREE_EXTRACTORS: tuple[str, ...] = (
     "bottom-up",
+    "bottom-up-optimized",
     "faster-bottom-up",
+    "faster-bottom-up-optimized",
     "prio-queue",
+    "prio-queue-optimized",
     "uniform-cost-search",
+    "uniform-cost-search-early-termination",
+    "uniform-cost-search-optimized",
     "a-star-two-phase",
     "a-star-two-phase-optimized",
     "a-star-interleaved",
@@ -413,6 +418,7 @@ def filter_results(
     exclude_suites: Sequence[str] = (),
     include_suites: Sequence[str] = (),
     extractors: Sequence[str] = (),
+    exclude_extractors: Sequence[str] = (),
     min_enodes: int | None = None,
     min_enodes_pct: float | None = None,
     min_eclasses: int | None = None,
@@ -425,6 +431,8 @@ def filter_results(
         df = df.filter(~pl.col("suite").is_in(list(exclude_suites)))
     if extractors:
         df = df.filter(pl.col("extractor").is_in(list(extractors)))
+    if exclude_extractors:
+        df = df.filter(~pl.col("extractor").is_in(list(exclude_extractors)))
     return filter_egraph_stats(
         df,
         min_enodes=min_enodes,
