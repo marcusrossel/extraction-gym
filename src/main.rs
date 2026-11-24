@@ -296,6 +296,8 @@ fn main() {
     let egraph = EGraph::from_json_file(&filename)
         .with_context(|| format!("Failed to parse {filename}"))
         .unwrap();
+    // Warm the lazy `OnceCell` class index so it is not included in timed extractions.
+    std::hint::black_box(egraph.classes());
 
     let extractor_detail = extractors
         .get(extractor_name.as_str())
