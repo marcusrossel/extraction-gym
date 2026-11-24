@@ -9,8 +9,11 @@ pub mod a_star_interleaved_optimized;
 pub mod a_star_two_phase;
 pub mod a_star_two_phase_optimized;
 pub mod bottom_up;
+pub mod bottom_up_optimized;
 pub mod faster_bottom_up;
+pub mod faster_bottom_up_optimized;
 pub mod faster_greedy_dag;
+pub mod faster_greedy_dag_optimized;
 #[cfg(feature = "ilp-cbc")]
 pub mod faster_ilp_cbc;
 pub mod global_greedy_dag;
@@ -18,7 +21,10 @@ pub mod greedy_dag;
 #[cfg(feature = "ilp-cbc")]
 pub mod ilp_cbc;
 pub mod prio_queue;
+pub mod prio_queue_optimized;
 pub mod uniform_cost_search;
+pub mod uniform_cost_search_early_termination;
+pub mod uniform_cost_search_optimized;
 
 // Allowance for floating point values to be considered equal
 pub const EPSILON_ALLOWANCE: f64 = 0.00001;

@@ -41,9 +41,26 @@ fn extractors() -> IndexMap<&'static str, ExtractorDetail> {
             },
         ),
         (
+            "bottom-up-optimized",
+            ExtractorDetail {
+                extractor: extract::bottom_up_optimized::BottomUpOptimizedExtractor.boxed(),
+                optimal: Optimal::Tree,
+                use_for_bench: true,
+            },
+        ),
+        (
             "faster-bottom-up",
             ExtractorDetail {
                 extractor: extract::faster_bottom_up::FasterBottomUpExtractor.boxed(),
+                optimal: Optimal::Tree,
+                use_for_bench: true,
+            },
+        ),
+        (
+            "faster-bottom-up-optimized",
+            ExtractorDetail {
+                extractor: extract::faster_bottom_up_optimized::FasterBottomUpOptimizedExtractor
+                    .boxed(),
                 optimal: Optimal::Tree,
                 use_for_bench: true,
             },
@@ -57,6 +74,14 @@ fn extractors() -> IndexMap<&'static str, ExtractorDetail> {
             },
         ),
         (
+            "prio-queue-optimized",
+            ExtractorDetail {
+                extractor: extract::prio_queue_optimized::PrioQueueOptimizedExtractor.boxed(),
+                optimal: Optimal::Tree,
+                use_for_bench: true,
+            },
+        ),
+        (
             "uniform-cost-search",
             ExtractorDetail {
                 extractor: extract::uniform_cost_search::UniformCostSearchExtractor.boxed(),
@@ -65,18 +90,28 @@ fn extractors() -> IndexMap<&'static str, ExtractorDetail> {
             },
         ),
         (
-            "a-star-two-phase",
+            "uniform-cost-search-early-termination",
             ExtractorDetail {
-                extractor: extract::a_star_two_phase::TwoPhaseAStarExtractor.boxed(),
+                extractor: extract::uniform_cost_search_early_termination::UniformCostSearchEarlyTerminationExtractor
+                    .boxed(),
                 optimal: Optimal::Tree,
                 use_for_bench: true,
             },
         ),
         (
-            "a-star-two-phase-optimized",
+            "uniform-cost-search-optimized",
             ExtractorDetail {
-                extractor: extract::a_star_two_phase_optimized::TwoPhaseAStarOptimizedExtractor
-                    .boxed(),
+                extractor:
+                    extract::uniform_cost_search_optimized::UniformCostSearchOptimizedExtractor
+                        .boxed(),
+                optimal: Optimal::Tree,
+                use_for_bench: true,
+            },
+        ),
+        (
+            "a-star-two-phase",
+            ExtractorDetail {
+                extractor: extract::a_star_two_phase::TwoPhaseAStarExtractor.boxed(),
                 optimal: Optimal::Tree,
                 use_for_bench: true,
             },
@@ -101,15 +136,6 @@ fn extractors() -> IndexMap<&'static str, ExtractorDetail> {
         (
             "a-star-interleaved-optimized",
             ExtractorDetail {
-                extractor: extract::a_star_interleaved_optimized::InterleavedAStarOptimizedExtractor
-                    .boxed(),
-                optimal: Optimal::Tree,
-                use_for_bench: true,
-            },
-        ),
-        (
-            "a-star-interleaved-optimized",
-            ExtractorDetail {
                 extractor:
                     extract::a_star_interleaved_optimized::InterleavedAStarOptimizedExtractor
                         .boxed(),
@@ -121,6 +147,15 @@ fn extractors() -> IndexMap<&'static str, ExtractorDetail> {
             "faster-greedy-dag",
             ExtractorDetail {
                 extractor: extract::faster_greedy_dag::FasterGreedyDagExtractor.boxed(),
+                optimal: Optimal::Neither,
+                use_for_bench: true,
+            },
+        ),
+        (
+            "faster-greedy-dag-optimized",
+            ExtractorDetail {
+                extractor: extract::faster_greedy_dag_optimized::FasterGreedyDagOptimizedExtractor
+                    .boxed(),
                 optimal: Optimal::Neither,
                 use_for_bench: true,
             },
