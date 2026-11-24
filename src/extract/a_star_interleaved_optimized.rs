@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::mem;
 
 use rustc_hash::FxHashMap;
@@ -7,7 +8,6 @@ use super::*;
 // An action scheduled by the queue, carrying a dense `u32` index into `egraph.nodes`.
 // Assignments carry their exact `bottom_up_cost` directly so leaves and ready branch e-nodes
 // never need to write or read a `Resolved` entry in `node_state`.
-#[derive(PartialEq, Eq)]
 enum Action {
     Visit(u32),
     Assign(u32, Cost),
@@ -37,7 +37,7 @@ struct EqcState {
 
 struct InterleavedAStarExt<'a> {
     egraph: &'a EGraph,
-    queue: PrioQueue<Action, Cost>,
+    queue: BTreeMap<Cost, Vec<Action>>,
     node_state: FxHashMap<u32, PendingNode>,
     eqc_state: FxHashMap<&'a ClassId, EqcState>,
     eqc_min: IndexMap<ClassId, NodeId>,
@@ -47,11 +47,24 @@ impl<'a> InterleavedAStarExt<'a> {
     fn new(egraph: &'a EGraph) -> InterleavedAStarExt<'a> {
         InterleavedAStarExt {
             egraph,
-            queue: PrioQueue::new(),
+            queue: BTreeMap::new(),
             node_state: Default::default(),
             eqc_state: Default::default(),
             eqc_min: Default::default(),
         }
+    }
+
+    fn enqueue(&mut self, action: Action, cost: Cost) {
+        self.queue.entry(cost).or_default().push(action);
+    }
+
+    fn dequeue(&mut self) -> Option<Action> {
+        let mut entry = self.queue.first_entry()?;
+        let action = entry.get_mut().pop().unwrap();
+        if entry.get().is_empty() {
+            entry.remove();
+        }
+        Some(action)
     }
 
     fn enqueue_visit_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost, parents: Vec<u32>) {
@@ -67,11 +80,9 @@ impl<'a> InterleavedAStarExt<'a> {
             let (idx, _, node) = egraph.nodes.get_full(node_id).unwrap();
             let node_idx = idx as u32;
             if node.children.is_empty() {
-                self.queue
-                    .insert(Action::Assign(node_idx, node.cost), td_cost + node.cost);
+                self.enqueue(Action::Assign(node_idx, node.cost), td_cost + node.cost);
             } else {
-                self.queue
-                    .insert(Action::Visit(node_idx), td_cost + node.cost);
+                self.enqueue(Action::Visit(node_idx), td_cost + node.cost);
             }
         }
     }
@@ -101,8 +112,7 @@ impl<'a> InterleavedAStarExt<'a> {
         }
 
         if delay == 0 {
-            self.queue
-                .insert(Action::Assign(node, acc_cost), td_cost + acc_cost);
+            self.enqueue(Action::Assign(node, acc_cost), td_cost + acc_cost);
         } else {
             self.node_state.insert(
                 node,
@@ -126,7 +136,7 @@ impl<'a> InterleavedAStarExt<'a> {
                     continue;
                 }
                 let bottom_up_cost = pending.cost;
-                self.queue.insert(
+                self.enqueue(
                     Action::Assign(parent, bottom_up_cost),
                     parent_eqc_state.td_cost + bottom_up_cost,
                 );
@@ -139,7 +149,7 @@ impl<'a> InterleavedAStarExt<'a> {
         let zero = NotNan::new(0.0).unwrap();
         self.enqueue_visit_eqc(target, zero, Vec::new());
 
-        while let Some((action, _)) = self.queue.pop() {
+        while let Some(action) = self.dequeue() {
             let node = match action {
                 Action::Visit(node) | Action::Assign(node, _) => node,
             };
@@ -186,42 +196,3 @@ impl Extractor for InterleavedAStarOptimizedExtractor {
         }
     }
 }
-
-mod a_star {
-    use std::cmp::{Ord, Ordering};
-    use std::collections::BinaryHeap;
-
-    // Takes the `Ord` from U, but reverses it.
-    #[derive(PartialEq, Eq, Debug)]
-    struct WithOrdRev<T: Eq, U: Ord>(pub T, pub U);
-
-    impl<T: Eq, U: Ord> Ord for WithOrdRev<T, U> {
-        fn cmp(&self, other: &Self) -> Ordering {
-            // It's the other way around, because we want a min-heap!
-            other.1.cmp(&self.1)
-        }
-    }
-
-    impl<T: Eq, U: Ord> PartialOrd for WithOrdRev<T, U> {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
-    pub struct PrioQueue<T: Eq, C: Ord>(BinaryHeap<WithOrdRev<T, C>>);
-
-    impl<T: Eq, C: Ord> PrioQueue<T, C> {
-        pub fn new() -> Self {
-            PrioQueue(BinaryHeap::new())
-        }
-
-        pub fn pop(&mut self) -> Option<(T, C)> {
-            self.0.pop().map(|WithOrdRev(t, c)| (t, c))
-        }
-
-        pub fn insert(&mut self, t: T, c: C) {
-            self.0.push(WithOrdRev(t, c));
-        }
-    }
-}
-use a_star::*;

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::mem;
 
 use rustc_hash::FxHashMap;
@@ -30,8 +31,8 @@ struct TwoPhaseAStarTopDownExtractor<'a> {
     egraph: &'a EGraph,
     eqc_state: FxHashMap<&'a ClassId, EqcState>,
     node_state: FxHashMap<u32, PendingNode>,
-    queue: PrioQueue<u32, Cost>,
-    leaves: PrioQueue<(u32, Cost), Cost>,
+    queue: BTreeMap<Cost, Vec<u32>>,
+    leaves: BTreeMap<Cost, Vec<(u32, Cost)>>,
 }
 
 impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
@@ -40,9 +41,19 @@ impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
             egraph,
             eqc_state: Default::default(),
             node_state: Default::default(),
-            queue: PrioQueue::new(),
-            leaves: PrioQueue::new(),
+            queue: BTreeMap::new(),
+            leaves: BTreeMap::new(),
         }
+    }
+
+    fn dequeue(&mut self) -> Option<(u32, Cost)> {
+        let mut entry = self.queue.first_entry()?;
+        let td_cost = *entry.key();
+        let node = entry.get_mut().pop().unwrap();
+        if entry.get().is_empty() {
+            entry.remove();
+        }
+        Some((node, td_cost))
     }
 
     fn enqueue_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost, parents: Vec<u32>) {
@@ -59,9 +70,14 @@ impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
             let node_idx = idx as u32;
             if node.children.is_empty() {
                 self.leaves
-                    .insert((node_idx, node.cost), td_cost + node.cost);
+                    .entry(td_cost + node.cost)
+                    .or_default()
+                    .push((node_idx, node.cost));
             } else {
-                self.queue.insert(node_idx, td_cost + node.cost);
+                self.queue
+                    .entry(td_cost + node.cost)
+                    .or_default()
+                    .push(node_idx);
             }
         }
     }
@@ -95,7 +111,7 @@ impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
     fn run(&mut self, target: &'a ClassId) {
         let zero = NotNan::new(0.0).unwrap();
         self.enqueue_eqc(target, zero, Vec::new());
-        while let Some((node, td_cost)) = self.queue.pop() {
+        while let Some((node, td_cost)) = self.dequeue() {
             self.visit_children(node, td_cost);
         }
     }
@@ -105,7 +121,7 @@ struct TwoPhaseAStarBottomUpExtractor<'a> {
     egraph: &'a EGraph,
     eqc_state: FxHashMap<&'a ClassId, EqcState>,
     node_state: FxHashMap<u32, PendingNode>,
-    queue: PrioQueue<(u32, Cost), Cost>,
+    queue: BTreeMap<Cost, Vec<(u32, Cost)>>,
     eqc_min: IndexMap<ClassId, NodeId>,
 }
 
@@ -120,6 +136,15 @@ impl<'a> TwoPhaseAStarBottomUpExtractor<'a> {
         }
     }
 
+    fn dequeue(&mut self) -> Option<(u32, Cost)> {
+        let mut entry = self.queue.first_entry()?;
+        let item = entry.get_mut().pop().unwrap();
+        if entry.get().is_empty() {
+            entry.remove();
+        }
+        Some(item)
+    }
+
     fn update_parents(&mut self, parents: Vec<u32>, resolved_cost: Cost) {
         for parent in parents {
             let pending = self.node_state.get_mut(&parent).expect(BAD_PATH);
@@ -132,17 +157,17 @@ impl<'a> TwoPhaseAStarBottomUpExtractor<'a> {
                     continue;
                 }
                 let bottom_up_cost = pending.cost;
-                self.queue.insert(
-                    (parent, bottom_up_cost),
-                    parent_eqc_state.td_cost + bottom_up_cost,
-                );
+                self.queue
+                    .entry(parent_eqc_state.td_cost + bottom_up_cost)
+                    .or_default()
+                    .push((parent, bottom_up_cost));
             }
         }
     }
 
     fn run(&mut self, target: &ClassId) {
         let egraph = self.egraph;
-        while let Some(((node, resolved_cost), _)) = self.queue.pop() {
+        while let Some((node, resolved_cost)) = self.dequeue() {
             let (nid, n) = egraph.nodes.get_index(node as usize).unwrap();
             let eqc = &n.eclass;
             let state = self.eqc_state.get_mut(eqc).expect(BAD_PATH);
@@ -180,42 +205,3 @@ impl Extractor for TwoPhaseAStarOptimizedExtractor {
         }
     }
 }
-
-mod naive_a_star {
-    use std::cmp::{Ord, Ordering};
-    use std::collections::BinaryHeap;
-
-    // Takes the `Ord` from U, but reverses it.
-    #[derive(PartialEq, Eq, Debug)]
-    struct WithOrdRev<T: Eq, U: Ord>(pub T, pub U);
-
-    impl<T: Eq, U: Ord> Ord for WithOrdRev<T, U> {
-        fn cmp(&self, other: &Self) -> Ordering {
-            // It's the other way around, because we want a min-heap!
-            other.1.cmp(&self.1)
-        }
-    }
-
-    impl<T: Eq, U: Ord> PartialOrd for WithOrdRev<T, U> {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
-    pub struct PrioQueue<T: Eq, C: Ord>(BinaryHeap<WithOrdRev<T, C>>);
-
-    impl<T: Eq, C: Ord> PrioQueue<T, C> {
-        pub fn new() -> Self {
-            PrioQueue(BinaryHeap::new())
-        }
-
-        pub fn pop(&mut self) -> Option<(T, C)> {
-            self.0.pop().map(|WithOrdRev(t, c)| (t, c))
-        }
-
-        pub fn insert(&mut self, t: T, c: C) {
-            self.0.push(WithOrdRev(t, c));
-        }
-    }
-}
-use naive_a_star::*;

@@ -28,6 +28,7 @@ The recommendations account for `egraph-serialize`'s representation (`EGraph.nod
 | 4.1 | Linear-time heapify for `leaves` (`Vec` → `BinaryHeap::from`) | Two-Phase | **Dropped** | `+2.4%` total; `1.045×` geomean (two-phase only; dropped for symmetry) |
 | 4.2 | Batch uniform-cost e-classes in Phase 1 | Two-Phase | **Dropped** | `+2.5%` total; `1.008×` geomean isolated, but `-11.9%` total / `0.938×` geomean on optimized code (re-hashes class nodes on pop) |
 | 4.3 | 4-ary min-heap | Both | **Dropped** | `+5.0%` / `+5.2%` total; `0.973×` / `1.024×` geomean (hurts interleaved geomean & adds custom heap maintenance) |
+| 4.4 | Bucketed `BTreeMap<Cost, Vec<...>>` priority queue (replaces `BinaryHeap`) | Both (+ UCS/PQ opt) | **Implemented** | On optimized Interleaved (`9,569` roots): **`+18.5%` total** (`+21.3%` / `1.241×` geomean on `>= 1 ms`), `1.002×` overall geomean; deletes `WithOrdRev`/`PrioQueue` boilerplate |
 
 ---
 
@@ -201,7 +202,21 @@ The recommendations account for `egraph-serialize`'s representation (`EGraph.nod
 - **Optimization:**
   - A compact 4-ary min-heap halves tree depth compared to `std::collections::BinaryHeap` (`log_4 n` vs `log_2 n`), reducing comparisons/moves on `push` and improving cache locality for child checks on `pop`.
   - **Result:** Helped large heaps (`+5.0%` / `+5.2%` total, `set_covering +6.8%` / `+5.3%`), but regressed interleaved geomean (`0.973×`) and adds custom heap code; dropped.
-  - **Code hygiene (remaining):** `PrioQueue` / `WithOrdRev` is duplicated across `a_star_interleaved.rs`, `a_star_two_phase.rs`, `prio_queue.rs`, and `uniform_cost_search.rs`. Also note that `WithOrdRev` derives `PartialEq`/`Eq` on both fields `(T, U)` while `Ord` compares only `U`, which technically violates Rust's `Eq`/`Ord` consistency contract (`a.cmp(b) == Equal` iff `a == b`).
+  - **Code hygiene (baseline only):** `PrioQueue` / `WithOrdRev` is duplicated across the baseline files `a_star_interleaved.rs`, `a_star_two_phase.rs`, `prio_queue.rs`, and `uniform_cost_search.rs` (removed in all `*_optimized` variants via `#4.4`). Also note that `WithOrdRev` derives `PartialEq`/`Eq` on both fields `(T, U)` while `Ord` compares only `U`, which technically violates Rust's `Eq`/`Ord` consistency contract (`a.cmp(b) == Equal` iff `a == b`).
+
+### 4.4 Bucketed `BTreeMap<Cost, Vec<...>>` priority queue
+
+- **Locations:** `a_star_interleaved_optimized.rs`, `a_star_two_phase_optimized.rs`, `uniform_cost_search_optimized.rs`, `prio_queue_optimized.rs`.
+- **Current behavior (baseline):** Each extractor defines a ~38-line local `PrioQueue` / `WithOrdRev` min-heap wrapper around `std::collections::BinaryHeap`, storing `(payload, Cost)` in every heap slot and performing $O(\log N)$ sifts on every push/pop.
+- **Optimization:** Replace `PrioQueue` with `std::collections::BTreeMap<Cost, Vec<T>>`:
+  - **Insert:** `queue.entry(cost).or_default().push(item)`
+  - **Pop:** pop from the back of `queue.first_entry()`'s `Vec` (removing the entry when empty).
+  - Deletes the entire `WithOrdRev` / `PrioQueue` module (~30–40 LOC per file) and requires neither `Ord` nor `Eq` on the queued payload.
+- **Why it wins:**
+  1. **Cost multiplicity:** Most benchmark suites use a handful of discrete integer node costs (`1`–`7` distinct node costs per file across `set_covering`, `herbie`, `maxsat`, `egg`, `eggcc-bril`, `flexc`), so the `BTreeMap` only holds $K \ll N$ distinct active costs. `Cost` is stored once per bucket rather than per item, and most operations reduce to contiguous `Vec::push`/`Vec::pop`.
+  2. **LIFO tie-breaking within equal-cost buckets:** Popping from the back of the `Vec` pops newly-pushed `Assign` actions at the current minimum cost immediately instead of interleaving them with thousands of pending equal-cost `Visit`s, propagating assignments toward `target` faster.
+  3. **Trade-off on distinct-cost graphs:** When costs are mostly distinct (`constructed`: 4,001 distinct node costs / 7,999 nodes; `rover`: ~176 distinct node costs/file), buckets shrink to 1–2 elements, causing regressions (`constructed -18.1%`, `rover` large instances `-12%` to `-16%`). LIFO tie-breaking can also occasionally hit an unproductive equal-cost plateau first (`herbie/356[18]` regressed `2.44×` while `herbie/5799[15]` sped up `3.55×`).
+- **Theoretical complexity:** With $N$ queued items, $E$ explored child edges, and $K \le N$ distinct active priority costs in the queue, `BTreeMap<Cost, Vec<T>>` takes $O(E + N \log K)$ time and $O(N)$ space — the **exact same $O(E + N \log N)$ worst-case bound** as `BinaryHeap` when $K = \Theta(N)$, and strictly tighter ($O(\log K)$ vs. $O(\log N)$ per queue op) when $K \ll N$.
 
 ---
 
@@ -209,13 +224,13 @@ The recommendations account for `egraph-serialize`'s representation (`EGraph.nod
 
 The original baselines remain intact in `src/extract/a_star_interleaved.rs` (`a-star-interleaved`) and `src/extract/a_star_two_phase.rs` (`a-star-two-phase`). The optimized variants live in `src/extract/a_star_interleaved_optimized.rs` (`a-star-interleaved-optimized`) and `src/extract/a_star_two_phase_optimized.rs` (`a-star-two-phase-optimized`) using **completely symmetric** data structures and preserving the exact original A\* search space (zero algorithmic search-space pruning):
 
-- **Active optimizations (identical in both files):** `#2.1` incremental `PendingNode { delay, cost }` (no per-node `FxHashSet` or child re-summing), `#2.2` queue payload `bottom_up_cost`, and `#3.1` dense `u32` `IndexMap` node indices (`get_full` / `get_index`) with sparse `FxHashMap<u32, PendingNode>`.
+- **Active optimizations (identical in both files, and mirrored in `uniform_cost_search_optimized.rs` & `prio_queue_optimized.rs`):** `#2.1` incremental `PendingNode { delay, cost }` (no per-node `FxHashSet` or child re-summing), `#2.2` queue payload `bottom_up_cost`, `#3.1` dense `u32` `IndexMap` node indices (`get_full` / `get_index`) with sparse `FxHashMap<u32, PendingNode>`, and `#4.4` bucketed `BTreeMap<Cost, Vec<...>>` priority queue.
 - **Removed after LOO ablation:** `#2.3` (deferred `choices` DFS), `#2.4` (`eqc_state.entry(...)`), and `#2.5` (inline `Parents` enum) were initially included in the `combined` benchmark below (`#2.1`–`#2.5` + `#3.1`, achieving `2.71×` / `2.62×` total and `1.863×` / `1.713×` geomean), then removed from the final optimized implementations: `#2.3` hurt total runtime (`-1.2%`/`-0.4%`) while adding ~20 LOC of DFS per file, `#2.4` was neutral-to-negative (`-0.1%`/`-1.8%` total), and `#2.5` was dropped for simplicity (~30 LOC/file) and slightly faster Two-Phase total time (`+2.1%`) despite its `+5.9%`/`+2.8%` geomean benefit on smaller/low-fanin graphs.
 - **Verification:** Every isolated variant and the optimized implementations passed `ExtractionResult::check` and matched baseline optimal tree costs (within `1e-5`).
 
 ### Remaining Untested Ideas
 - **Avoiding string hashing in `eqc_state: FxHashMap<&ClassId, EqcState>`** (e.g., dense `u32` `IndexMap` class indices via `egraph.classes().get_full(...)` / `get_index(...)`).
-- **Shared `PrioQueue` helper** deduplication across `a_star_interleaved.rs`, `a_star_two_phase.rs`, `prio_queue.rs`, and `uniform_cost_search.rs`.
+- **Shared `PrioQueue` helper** deduplication across the untouched baseline extractors (`a_star_interleaved.rs`, `a_star_two_phase.rs`, `prio_queue.rs`, and `uniform_cost_search.rs`).
 
 ---
 
@@ -241,4 +256,16 @@ Measured in-process across all **310 e-graphs** (9,070 single-root extractions; 
 | `#4.1` `BinaryHeap::from` for `leaves` | — | — | `3670.5 ms` (`+2.4%`) | `1.045×` (`+4.3%`) | **Dropped** — modest consistent win (`constructed +5.9%`, `flexc +5.6%`, `babble +5.2%`); two-phase only, dropped for symmetry |
 | `#4.2` Batch uniform-cost e-classes (Phase 1) | — | — | `3663.5 ms` (`+2.5%`) | `1.008×` (`+0.8%`) | **Dropped** — small win isolated (`egg +17.7%`), but `-11.9%` total / `0.938×` geomean on `kept_optimized` (re-hashes class nodes via `get_full` on pop) |
 | `#4.3` 4-ary min-heap | `3958.8 ms` (`+5.0%`) | `0.973×` (`-2.8%`) | `3564.6 ms` (`+5.2%`) | `1.024×` (`+2.3%`) | **Dropped** — helps large heaps (`set_covering +6.8%/+5.3%`, `egg +22.7%/+9.8%`), regresses interleaved geomean |
-| **`combined`** (`#2.1`–`#2.5` + `#3.1`) | **`1538.9 ms` (`+63.1%`)** | **`1.863×` (`+46.3%`)** | **`1433.4 ms` (`+61.9%`)** | **`1.713×` (`+41.6%`)** | Pre-trim combined run (`2.71×` / `2.62×` total); `#2.3`, `#2.4` & `#2.5` subsequently dropped from `a_star_*_optimized.rs` (leaving `#2.1` + `#2.2` + `#3.1`) |
+| **`combined`** (`#2.1`–`#2.5` + `#3.1`) | **`1538.9 ms` (`+63.1%`)** | **`1.863×` (`+46.3%`)** | **`1433.4 ms` (`+61.9%`)** | **`1.713×` (`+41.6%`)** | Pre-trim combined run (`2.71×` / `2.62×` total); `#2.3`, `#2.4` & `#2.5` subsequently dropped from `a_star_*_optimized.rs` (leaving `#2.1` + `#2.2` + `#3.1` + `#4.4`) |
+
+### Follow-Up A/B: `#4.4` (`BTreeMap<Cost, Vec<Action>>` vs. `BinaryHeap` on `a-star-interleaved-optimized`)
+
+Measured interleaved per file across all **773 e-graphs / 9,569 single-root extractions** (`--single-root`, 1 warmup + median of 3 runs, non-`benchmode` run, 0 cost mismatches) on top of `#2.1` + `#2.2` + `#3.1`:
+
+| Slice | `N` | `BinaryHeap` | `BTreeMap` | Runtime Reduction | Geomean Speedup (`Heap / BTree`) | Wins (`BTree` vs. `Heap`) |
+|---|---:|---:|---:|---:|---:|---:|
+| All | 9,569 | `1478.0 ms` | **`1205.3 ms`** | **`+18.5%`** | `1.002×` | — |
+| `max >= 100 µs` | 368 | `1317.4 ms` | **`1044.9 ms`** | **`+20.7%`** | **`1.124×`** | **341** vs. 26 |
+| `max >= 1,000 µs` | 93 | `1237.9 ms` | **`973.8 ms`** | **`+21.3%`** | **`1.241×`** | **85** vs. 8 |
+
+Largest suite gains: `set_covering` (`+22.7%`, `848.8 → 655.9 ms`), `herbie` (`+19.7%`, `321.4 → 258.0 ms`), `maxsat` (`+29.8%`), `egg` (`+21.0%`), `eggcc-bril` (`+15.3%`), `tensat` (`+11.9%`), `flexc` (`+11.7%`). Main regressions on high-distinct-cost suites: `constructed` (`-18.1%`) and `rover` (`-1.0%` total; `-12%` to `-16%` on `fir_8_tap_{5,6,7}iteration`).
