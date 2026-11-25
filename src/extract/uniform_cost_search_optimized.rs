@@ -1,10 +1,11 @@
 // Optimized `UniformCostSearchExtractor` (see `a_star_optimizations.md`):
-// - #2.1: Incremental `PendingNode { delay, cost }` (no per-node `FxHashSet` child deduplication
-//         or child re-summing when `delay` reaches 0).
-// - #2.2: Use `bottom_up_cost` directly from the priority queue payload (leaves skip `node_state`,
-//         and pops do not re-sum child costs).
+// - #2.1: Delay-counter `node_delay: FxHashMap<u32, u32>` (no per-node `FxHashSet` child
+//         deduplication; evaluates `node_cost` once when `delay` reaches 0 so non-additive cost
+//         functions are supported directly).
+// - #2.2: Use `bottom_up_cost` directly from the priority queue payload (leaves skip `node_delay`,
+//         and pops do not re-evaluate child costs).
 // - #3.1: Dense `u32` `IndexMap` node indices (`get_full` / `get_index`) with sparse
-//         `FxHashMap<u32, PendingNode>` and `FxHashMap<&ClassId, EqcStatus>` (avoids repeated
+//         `FxHashMap<u32, u32>` and `FxHashMap<&ClassId, EqcStatus>` (avoids repeated
 //         `egraph.nodes` SipHash lookups and `ClassId`/`NodeId` clones).
 // - #4.4: Bucketed `BTreeMap<Cost, Vec<u32>>` priority queue (replaces `BinaryHeap` + `PrioQueue`).
 // - Algorithmic: Early termination in Phase 2 once all root e-classes are resolved (matching A*'s
@@ -15,7 +16,7 @@ use std::mem;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::common::{BucketQueue, EqcStatus, PendingNode};
+use super::common::{BucketQueue, EqcStatus, node_cost};
 use super::*;
 
 pub struct UniformCostSearchOptimizedExtractor;
@@ -23,7 +24,7 @@ pub struct UniformCostSearchOptimizedExtractor;
 impl Extractor for UniformCostSearchOptimizedExtractor {
     fn extract(&self, egraph: &EGraph, roots: &[ClassId]) -> ExtractionResult {
         let mut eqc_state: FxHashMap<&ClassId, EqcStatus> = Default::default();
-        let mut node_state: FxHashMap<u32, PendingNode> = Default::default();
+        let mut node_delay: FxHashMap<u32, u32> = Default::default();
         let mut analysis_pending: BucketQueue<u32> = BucketQueue::new();
         let mut queue: VecDeque<&ClassId> = VecDeque::new();
 
@@ -48,26 +49,20 @@ impl Extractor for UniformCostSearchOptimizedExtractor {
                 let (idx, _, node) = egraph.nodes.get_full(node_id).unwrap();
                 let node_idx = idx as u32;
                 if node.children.is_empty() {
-                    analysis_pending.push(node.cost, node_idx);
+                    analysis_pending.push(node_cost(egraph, node, |_| unreachable!()), node_idx);
                 } else {
                     for child in &node.children {
                         let c = egraph.nid_to_cid(child);
                         match eqc_state.get_mut(c) {
                             Some(EqcStatus::Parents(parents)) => parents.push(node_idx),
-                            Some(EqcStatus::Resolved) => unreachable!(),
+                            Some(EqcStatus::Resolved(_)) => unreachable!(),
                             None => {
                                 eqc_state.insert(c, EqcStatus::Parents(vec![node_idx]));
                                 queue.push_back(c);
                             }
                         }
                     }
-                    node_state.insert(
-                        node_idx,
-                        PendingNode {
-                            delay: node.children.len() as u32,
-                            cost: node.cost,
-                        },
-                    );
+                    node_delay.insert(node_idx, node.children.len() as u32);
                 }
             }
         }
@@ -77,10 +72,10 @@ impl Extractor for UniformCostSearchOptimizedExtractor {
             let (nid, node) = egraph.nodes.get_index(node_idx as usize).unwrap();
             let class_id = &node.eclass;
             let status = eqc_state.get_mut(class_id).unwrap();
-            if matches!(status, EqcStatus::Resolved) {
+            if matches!(status, EqcStatus::Resolved(_)) {
                 continue;
             }
-            let prev = mem::replace(status, EqcStatus::Resolved);
+            let prev = mem::replace(status, EqcStatus::Resolved(resolved_cost));
             result.choose(class_id.clone(), nid.clone());
             match single_root {
                 Some(target) => {
@@ -96,15 +91,16 @@ impl Extractor for UniformCostSearchOptimizedExtractor {
             }
             if let EqcStatus::Parents(parents) = prev {
                 for parent in parents {
-                    let pending = node_state.get_mut(&parent).unwrap();
-                    pending.cost += resolved_cost;
-                    pending.delay -= 1;
-                    if pending.delay == 0 {
+                    let delay = node_delay.get_mut(&parent).unwrap();
+                    *delay -= 1;
+                    if *delay == 0 {
                         let (_, parent_node) = egraph.nodes.get_index(parent as usize).unwrap();
-                        if matches!(eqc_state[&parent_node.eclass], EqcStatus::Resolved) {
+                        if matches!(eqc_state[&parent_node.eclass], EqcStatus::Resolved(_)) {
                             continue;
                         }
-                        analysis_pending.push(pending.cost, parent);
+                        let cost =
+                            node_cost(egraph, parent_node, |cid| eqc_state[cid].resolved_cost());
+                        analysis_pending.push(cost, parent);
                     }
                 }
             }

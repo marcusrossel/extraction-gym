@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BinaryHeap, VecDeque};
 
 use rustc_hash::FxHashSet;
 
-use super::Cost;
+use super::{ClassId, Cost, EGraph, Node};
 
 // Takes the `Ord` from U, but reverses it.
 #[derive(PartialEq, Eq, Debug)]
@@ -86,19 +86,37 @@ impl<T> BucketQueue<T> {
     }
 }
 
-/// State of a branch e-node waiting for its child e-classes to be resolved.
-/// `delay` counts remaining unresolved child occurrences (not deduplicated), and `cost`
-/// accumulates `node.cost` plus resolved child costs.
-pub(crate) struct PendingNode {
-    pub delay: u32,
-    pub cost: Cost,
+/// Evaluates the bottom-up cost of `node` given a lookup for its child e-class costs.
+/// Centralized here so all optimized extractors share a single cost-function hook.
+#[inline]
+pub(crate) fn node_cost(
+    egraph: &EGraph,
+    node: &Node,
+    mut child_cost: impl FnMut(&ClassId) -> Cost,
+) -> Cost {
+    node.cost
+        + node
+            .children
+            .iter()
+            .map(|c| child_cost(egraph.nid_to_cid(c)))
+            .sum::<Cost>()
 }
 
 /// Whether an e-class has been resolved yet. As an e-class' parents are only needed at the moment
 /// it is assigned a minimal e-node, the two states are mutually exclusive.
 pub(crate) enum EqcStatus {
     Parents(Vec<u32>),
-    Resolved,
+    Resolved(Cost),
+}
+
+impl EqcStatus {
+    #[inline]
+    pub fn resolved_cost(&self) -> Cost {
+        match self {
+            EqcStatus::Resolved(cost) => *cost,
+            EqcStatus::Parents(_) => panic!("Accessed the cost of an unresolved e-class."),
+        }
+    }
 }
 
 /** A data structure to maintain a queue of unique elements.

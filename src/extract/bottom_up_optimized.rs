@@ -7,6 +7,7 @@
 
 use rustc_hash::FxHashMap;
 
+use super::common::node_cost;
 use super::*;
 
 pub struct BottomUpOptimizedExtractor;
@@ -35,12 +36,7 @@ impl Extractor for BottomUpOptimizedExtractor {
             for &node_idx in &node_indices {
                 let (node_id, node) = egraph.nodes.get_index(node_idx as usize).unwrap();
                 let class_id = &node.eclass;
-                let cost = node.cost
-                    + node
-                        .children
-                        .iter()
-                        .map(|n| costs.get(egraph.nid_to_cid(n)).unwrap_or(&INFINITY))
-                        .sum::<Cost>();
+                let cost = node_cost(egraph, node, |cid| *costs.get(cid).unwrap_or(&INFINITY));
                 if &cost < costs.get(class_id).unwrap_or(&INFINITY) {
                     result.choose(class_id.clone(), node_id.clone());
                     costs.insert(class_id, cost);

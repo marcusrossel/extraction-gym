@@ -6,7 +6,7 @@
 
 use rustc_hash::FxHashMap;
 
-use super::common::UniqueQueue;
+use super::common::{UniqueQueue, node_cost};
 use super::*;
 
 pub struct FasterBottomUpOptimizedExtractor;
@@ -50,12 +50,7 @@ impl Extractor for FasterBottomUpOptimizedExtractor {
             let (node_id, node) = egraph.nodes.get_index(node_idx as usize).unwrap();
             let class_id = &node.eclass;
             let prev_cost = costs.get(class_id).unwrap_or(&INFINITY);
-            let cost = node.cost
-                + node
-                    .children
-                    .iter()
-                    .map(|n| costs.get(n2c(n)).unwrap_or(&INFINITY))
-                    .sum::<Cost>();
+            let cost = node_cost(egraph, node, |cid| *costs.get(cid).unwrap_or(&INFINITY));
             if cost < *prev_cost {
                 result.choose(class_id.clone(), node_id.clone());
                 costs.insert(class_id, cost);

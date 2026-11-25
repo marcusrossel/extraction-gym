@@ -18,7 +18,7 @@ The recommendations account for `egraph-serialize`'s representation (`EGraph.nod
 | 1.3 | Suppress dominated `Assign` pushes via `best_enqueued_bu` | Both | **Dropped** | `+0.9%` / `+0.4%` total; `0.967×` / `0.972×` geomean (helped `herbie` `+5–7%`, regressed geomean) |
 | 1.4 | Tighten `Visit` merit using resolved sibling costs | Interleaved | **Dropped** | `-6.5%` total; `0.890×` geomean (regressed across suites: `diospyros -34%`, `herbie -24%`, `rover -23%`) |
 | 1.5 | Tie-break `Assign` before `Visit` on equal merit | Interleaved | **Dropped** | `-2.7%` total; `0.955×` geomean (only helped `egg` `+23%`, hurt other suites) |
-| 2.1 | Remove per-node `FxHashSet` & re-summing via incremental `acc_cost` | Both | **Implemented** | **`+11.9%` / `+10.5%` total; `1.276×` / `1.210×` geomean** (universal win across suites) |
+| 2.1 | Remove per-node `FxHashSet` via delay counter (originally incremental `acc_cost`; later generalized to `node_delay` + `common::node_cost` at `delay == 0`) | Both | **Implemented** | **`+11.9%` / `+10.5%` total; `1.276×` / `1.210×` geomean** (universal win across suites; measured with incremental `acc_cost`) |
 | 2.2 | Carry `bottom_up_cost` in queue payload (skip `NodeState::Resolved`) | Both | **Implemented** | **`+4.9%` / `+9.1%` total; `1.008×` / `1.053×` geomean** (LOO confirms `+2.7%` / `+0.5%` geomean, `+0.4%` / `+1.2%` total) |
 | 2.3 | Defer building `ExtractionResult.choices` until `target` is resolved | Both | **Dropped** | `+1.0%` / `+3.5%` total; `0.992×` / `1.047×` geomean (LOO: `-1.2%` / `-0.4%` total, `+1.4%` / `+1.3%` geomean; hurts `maxsat`/`constructed` & adds ~20 LOC DFS) |
 | 2.4 | Use `eqc_state.entry(...)` to avoid double hashing on first reach | Both | **Dropped** | `+1.6%` / `+0.8%` total; `1.015×` / `1.007×` geomean (LOO: `-0.1%` / `-1.8%` total, `+0.8%` / `-0.5%` geomean) |
@@ -112,14 +112,14 @@ The recommendations account for `egraph-serialize`'s representation (`EGraph.nod
     }
     ```
   - Duplicate children (e.g., `mul(x, x)`) appear twice in `parents[x]` and increment `delay` by 2, so when `x` resolves, `resolved_cost` is added twice and `delay` reaches 0 at the exact right moment.
-- **Caveat:** Floating-point addition is not strictly associative, so summing child costs in resolution order rather than left-to-right child order can differ by 1 ULP for fractional floats (exact for integer costs and well within `EPSILON_ALLOWANCE`). If exact left-to-right float summation is desired, an alternative is fast-pathing arity 1 and 2 and reusing a scratch `Vec` on `self` instead of allocating a per-node `FxHashSet`.
+- **Caveat & subsequent generalization:** Floating-point addition is not strictly associative, so summing child costs in resolution order rather than left-to-right child order can differ by 1 ULP for fractional floats, and incremental `+=` restricts `*_optimized` to associative/commutative additive folds. To support arbitrary non-additive cost functions (see `non_additive_cost_example.md`) while keeping the `FxHashSet`-removal win, the final `*_optimized` extractors replace `PendingNode { delay, cost }` with a plain `node_delay: FxHashMap<u32, u32>` counter, store `EqcStatus::Resolved(Cost)` in `common.rs`, and evaluate a shared `common::node_cost` helper once when `delay` reaches `0` (and for leaves). This shrinks `node_delay` entries from 16 bytes to 4, preserves exact left-to-right child order, and still avoids per-node `FxHashSet` child deduplication and per-pop re-evaluation.
 
 ### 2.2 Carry `bottom_up_cost` in the queue payload (remove `NodeState::Resolved`)
 
 - **Locations:** `a_star_interleaved.rs` (lines 26–40, 140–141, 243, 287), `a_star_two_phase.rs` (lines 10–26, 110–111, 218, 241).
 - **Current behavior:** `NodeState::Resolved(Cost)` is inserted into `node_state` for every leaf and every ready branch node only to be read once when the node is popped for assignment.
 - **Optimization:** Store `bottom_up_cost` directly in the queue entry (e.g., `Action::Assign(u32, Cost)` in interleaved, `(u32, Cost)` payload in two-phase bottom-up).
-  - Leaves and immediately-resolved branches never insert into `node_state`.
+  - Leaves and immediately-resolved branches never insert into `node_state` / `node_delay`.
   - `update_parents` never writes back a `Resolved` state when `delay` hits 0.
   - `run` avoids looking up `self.node_state[node]` on every assignment.
   - Note: Do **not** compute `bottom_up_cost = merit - td_cost` from `f64` values, as subtraction can lose precision when `td_cost >> bottom_up_cost`. Carrying `bottom_up_cost` directly avoids rounding issues.
@@ -165,7 +165,7 @@ The recommendations account for `egraph-serialize`'s representation (`EGraph.nod
 
 - **Optimization:**
   - In `enqueue_eqc_nodes`, look up each node **once** via `egraph.nodes.get_full(node)` to obtain `(node_idx, nid_ref, node_data)`.
-  - Store `node_idx: u32` in the priority queue, `parents`, `node_state: FxHashMap<u32, PendingNode>`, and `EqcStatus::Resolved`.
+  - Store `node_idx: u32` in the priority queue, `parents`, `node_delay: FxHashMap<u32, u32>` (originally `node_state: FxHashMap<u32, PendingNode>`), and `EqcStatus`.
   - Replace all later `egraph[node]` and `egraph.nid_to_cid(node)` calls with `egraph.nodes.get_index(node_idx as usize)` — a direct O(1) array lookup with **zero hashing**.
 - **Additional benefits:**
   - `node_state` hashes a 4-byte `u32` (a single multiply in `FxHash`) instead of hashing variable-length strings and chasing `Arc<str>` pointers.
@@ -224,7 +224,7 @@ The recommendations account for `egraph-serialize`'s representation (`EGraph.nod
 
 The original baselines remain intact in `src/extract/a_star_interleaved.rs` (`a-star-interleaved`) and `src/extract/a_star_two_phase.rs` (`a-star-two-phase`). The optimized variants live in `src/extract/a_star_interleaved_optimized.rs` (`a-star-interleaved-optimized`) and `src/extract/a_star_two_phase_optimized.rs` (`a-star-two-phase-optimized`) using **completely symmetric** data structures and preserving the exact original A\* search space (zero algorithmic search-space pruning):
 
-- **Active optimizations (identical in both files, and mirrored in `uniform_cost_search_optimized.rs` & `prio_queue_optimized.rs`):** `#2.1` incremental `PendingNode { delay, cost }` (no per-node `FxHashSet` or child re-summing), `#2.2` queue payload `bottom_up_cost`, `#3.1` dense `u32` `IndexMap` node indices (`get_full` / `get_index`) with sparse `FxHashMap<u32, PendingNode>`, and `#4.4` bucketed `BTreeMap<Cost, Vec<...>>` priority queue.
+- **Active optimizations (identical in both files, and mirrored in `uniform_cost_search_optimized.rs` & `prio_queue_optimized.rs`):** `#2.1` delay-only `node_delay: FxHashMap<u32, u32>` (no per-node `FxHashSet` child deduplication; evaluates shared `common::node_cost` once at `delay == 0` using `EqcStatus::Resolved(Cost)` so non-additive cost functions are supported directly), `#2.2` queue payload `bottom_up_cost`, `#3.1` dense `u32` `IndexMap` node indices (`get_full` / `get_index`) with sparse `FxHashMap<u32, u32>`, and `#4.4` bucketed `BTreeMap<Cost, Vec<...>>` priority queue.
 - **Removed after LOO ablation:** `#2.3` (deferred `choices` DFS), `#2.4` (`eqc_state.entry(...)`), and `#2.5` (inline `Parents` enum) were initially included in the `combined` benchmark below (`#2.1`–`#2.5` + `#3.1`, achieving `2.71×` / `2.62×` total and `1.863×` / `1.713×` geomean), then removed from the final optimized implementations: `#2.3` hurt total runtime (`-1.2%`/`-0.4%`) while adding ~20 LOC of DFS per file, `#2.4` was neutral-to-negative (`-0.1%`/`-1.8%` total), and `#2.5` was dropped for simplicity (~30 LOC/file) and slightly faster Two-Phase total time (`+2.1%`) despite its `+5.9%`/`+2.8%` geomean benefit on smaller/low-fanin graphs.
 - **Verification:** Every isolated variant and the optimized implementations passed `ExtractionResult::check` and matched baseline optimal tree costs (within `1e-5`).
 

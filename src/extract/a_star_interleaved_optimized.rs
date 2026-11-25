@@ -2,22 +2,15 @@ use std::mem;
 
 use rustc_hash::FxHashMap;
 
-use super::common::{BucketQueue, PendingNode};
+use super::common::{BucketQueue, EqcStatus, node_cost};
 use super::*;
 
 // An action scheduled by the queue, carrying a dense `u32` index into `egraph.nodes`.
 // Assignments carry their exact `bottom_up_cost` directly so leaves and ready branch e-nodes
-// never need to write or read a `Resolved` entry in `node_state`.
+// never need to write or read a `Resolved` entry in `node_delay`.
 enum Action {
     Visit(u32),
     Assign(u32, Cost),
-}
-
-// Whether an e-class has been resolved yet. As an e-class' parents are only needed at the moment
-// it is assigned a minimal e-node, the two states are mutually exclusive.
-enum EqcStatus {
-    Parents(Vec<u32>),
-    Resolved(Cost),
 }
 
 // The state associated with a reached e-class over the course of the extraction.
@@ -30,7 +23,7 @@ struct EqcState {
 struct InterleavedAStarExt<'a> {
     egraph: &'a EGraph,
     queue: BucketQueue<Action>,
-    node_state: FxHashMap<u32, PendingNode>,
+    node_delay: FxHashMap<u32, u32>,
     eqc_state: FxHashMap<&'a ClassId, EqcState>,
     eqc_min: IndexMap<ClassId, NodeId>,
 }
@@ -40,7 +33,7 @@ impl<'a> InterleavedAStarExt<'a> {
         InterleavedAStarExt {
             egraph,
             queue: BucketQueue::new(),
-            node_state: Default::default(),
+            node_delay: Default::default(),
             eqc_state: Default::default(),
             eqc_min: Default::default(),
         }
@@ -67,7 +60,8 @@ impl<'a> InterleavedAStarExt<'a> {
             let (idx, _, node) = egraph.nodes.get_full(node_id).unwrap();
             let node_idx = idx as u32;
             if node.children.is_empty() {
-                self.enqueue(Action::Assign(node_idx, node.cost), td_cost + node.cost);
+                let leaf_cost = node_cost(egraph, node, |_| unreachable!());
+                self.enqueue(Action::Assign(node_idx, leaf_cost), td_cost + leaf_cost);
             } else {
                 self.enqueue(Action::Visit(node_idx), td_cost + node.cost);
             }
@@ -79,13 +73,12 @@ impl<'a> InterleavedAStarExt<'a> {
         let egraph = self.egraph;
         let node_td_cost = td_cost + n.cost;
         let mut delay = 0u32;
-        let mut acc_cost = n.cost;
 
         for child in &n.children {
             let child = egraph.nid_to_cid(child);
             match self.eqc_state.get_mut(child) {
                 Some(state) => match &mut state.status {
-                    EqcStatus::Resolved(cost) => acc_cost += *cost,
+                    EqcStatus::Resolved(_) => {}
                     EqcStatus::Parents(parents) => {
                         parents.push(node);
                         delay += 1;
@@ -99,30 +92,30 @@ impl<'a> InterleavedAStarExt<'a> {
         }
 
         if delay == 0 {
-            self.enqueue(Action::Assign(node, acc_cost), td_cost + acc_cost);
-        } else {
-            self.node_state.insert(
-                node,
-                PendingNode {
-                    delay,
-                    cost: acc_cost,
-                },
+            let bottom_up_cost =
+                node_cost(egraph, n, |cid| self.eqc_state[cid].status.resolved_cost());
+            self.enqueue(
+                Action::Assign(node, bottom_up_cost),
+                td_cost + bottom_up_cost,
             );
+        } else {
+            self.node_delay.insert(node, delay);
         }
     }
 
-    fn update_parents(&mut self, parents: Vec<u32>, resolved_cost: Cost) {
+    fn update_parents(&mut self, parents: Vec<u32>) {
         for parent in parents {
-            let pending = self.node_state.get_mut(&parent).expect(BAD_PATH);
-            pending.cost += resolved_cost;
-            pending.delay -= 1;
-            if pending.delay == 0 {
+            let delay = self.node_delay.get_mut(&parent).expect(BAD_PATH);
+            *delay -= 1;
+            if *delay == 0 {
                 let (_, parent_node) = self.egraph.nodes.get_index(parent as usize).unwrap();
                 let parent_eqc_state = &self.eqc_state[&parent_node.eclass];
                 if let EqcStatus::Resolved(_) = parent_eqc_state.status {
                     continue;
                 }
-                let bottom_up_cost = pending.cost;
+                let bottom_up_cost = node_cost(self.egraph, parent_node, |cid| {
+                    self.eqc_state[cid].status.resolved_cost()
+                });
                 self.enqueue(
                     Action::Assign(parent, bottom_up_cost),
                     parent_eqc_state.td_cost + bottom_up_cost,
@@ -158,7 +151,7 @@ impl<'a> InterleavedAStarExt<'a> {
                         break;
                     }
                     if let EqcStatus::Parents(parents) = prev {
-                        self.update_parents(parents, resolved_cost);
+                        self.update_parents(parents);
                     }
                 }
             }
