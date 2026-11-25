@@ -11,7 +11,7 @@
 
 use rustc_hash::FxHashMap;
 
-use super::faster_bottom_up::UniqueQueue;
+use super::common::UniqueQueue;
 use super::*;
 
 struct CostSet<'a> {

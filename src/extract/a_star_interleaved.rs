@@ -2,6 +2,7 @@ use std::mem;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use super::common::PrioQueue;
 use super::*;
 
 // The kinds of action scheduled by the queue: visiting an e-node, and assigning an e-node to its
@@ -313,42 +314,3 @@ impl Extractor for InterleavedAStarExtractor {
         }
     }
 }
-
-mod a_star {
-    use std::cmp::{Ord, Ordering};
-    use std::collections::BinaryHeap;
-
-    // Takes the `Ord` from U, but reverses it.
-    #[derive(PartialEq, Eq, Debug)]
-    struct WithOrdRev<T: Eq, U: Ord>(pub T, pub U);
-
-    impl<T: Eq, U: Ord> Ord for WithOrdRev<T, U> {
-        fn cmp(&self, other: &Self) -> Ordering {
-            // It's the other way around, because we want a min-heap!
-            other.1.cmp(&self.1)
-        }
-    }
-
-    impl<T: Eq, U: Ord> PartialOrd for WithOrdRev<T, U> {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-
-    pub struct PrioQueue<T: Eq, C: Ord>(BinaryHeap<WithOrdRev<T, C>>);
-
-    impl<T: Eq, C: Ord> PrioQueue<T, C> {
-        pub fn new() -> Self {
-            PrioQueue(BinaryHeap::new())
-        }
-
-        pub fn pop(&mut self) -> Option<(T, C)> {
-            self.0.pop().map(|WithOrdRev(t, c)| (t, c))
-        }
-
-        pub fn insert(&mut self, t: T, c: C) {
-            self.0.push(WithOrdRev(t, c));
-        }
-    }
-}
-use a_star::*;

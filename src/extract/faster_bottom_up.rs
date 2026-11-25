@@ -1,5 +1,6 @@
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
+use super::common::UniqueQueue;
 use super::*;
 
 /// A faster bottom up extractor inspired by the faster-greedy-dag extractor.
@@ -59,65 +60,5 @@ impl Extractor for FasterBottomUpExtractor {
         }
 
         result
-    }
-}
-
-/** A data structure to maintain a queue of unique elements.
-
-Notably, insert/pop operations have O(1) expected amortized runtime complexity.
-
-Thanks @Bastacyclop for the implementation!
-*/
-#[derive(Clone)]
-pub(crate) struct UniqueQueue<T>
-where
-    T: Eq + std::hash::Hash + Clone,
-{
-    set: FxHashSet<T>, // hashbrown::
-    queue: std::collections::VecDeque<T>,
-}
-
-impl<T> Default for UniqueQueue<T>
-where
-    T: Eq + std::hash::Hash + Clone,
-{
-    fn default() -> Self {
-        UniqueQueue {
-            set: Default::default(),
-            queue: std::collections::VecDeque::new(),
-        }
-    }
-}
-
-impl<T> UniqueQueue<T>
-where
-    T: Eq + std::hash::Hash + Clone,
-{
-    pub fn insert(&mut self, t: T) {
-        if self.set.insert(t.clone()) {
-            self.queue.push_back(t);
-        }
-    }
-
-    pub fn extend<I>(&mut self, iter: I)
-    where
-        I: IntoIterator<Item = T>,
-    {
-        for t in iter.into_iter() {
-            self.insert(t);
-        }
-    }
-
-    pub fn pop(&mut self) -> Option<T> {
-        let res = self.queue.pop_front();
-        res.as_ref().map(|t| self.set.remove(t));
-        res
-    }
-
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        let r = self.queue.is_empty();
-        debug_assert_eq!(r, self.set.is_empty());
-        r
     }
 }

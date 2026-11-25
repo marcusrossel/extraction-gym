@@ -10,37 +10,13 @@
 // - Algorithmic: Early termination in Phase 2 once all root e-classes are resolved (matching A*'s
 //         stopping condition while preserving multi-root support).
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::mem;
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use super::common::{BucketQueue, EqcStatus, PendingNode};
 use super::*;
-
-// State of a reachable branch e-node waiting for its child e-classes to be resolved.
-// `delay` counts remaining unresolved child occurrences (not deduplicated), and `cost`
-// accumulates `node.cost` plus resolved child costs.
-struct PendingNode {
-    delay: u32,
-    cost: Cost,
-}
-
-// Whether an e-class has been resolved yet. As an e-class' parents are only needed at the moment
-// it is assigned a minimal e-node, the two states are mutually exclusive.
-enum EqcStatus {
-    Parents(Vec<u32>),
-    Resolved,
-}
-
-fn pop_min(queue: &mut BTreeMap<Cost, Vec<u32>>) -> Option<(u32, Cost)> {
-    let mut entry = queue.first_entry()?;
-    let cost = *entry.key();
-    let node = entry.get_mut().pop().unwrap();
-    if entry.get().is_empty() {
-        entry.remove();
-    }
-    Some((node, cost))
-}
 
 pub struct UniformCostSearchOptimizedExtractor;
 
@@ -48,7 +24,7 @@ impl Extractor for UniformCostSearchOptimizedExtractor {
     fn extract(&self, egraph: &EGraph, roots: &[ClassId]) -> ExtractionResult {
         let mut eqc_state: FxHashMap<&ClassId, EqcStatus> = Default::default();
         let mut node_state: FxHashMap<u32, PendingNode> = Default::default();
-        let mut analysis_pending: BTreeMap<Cost, Vec<u32>> = BTreeMap::new();
+        let mut analysis_pending: BucketQueue<u32> = BucketQueue::new();
         let mut queue: VecDeque<&ClassId> = VecDeque::new();
 
         let mut root_set: FxHashSet<&ClassId> = Default::default();
@@ -72,10 +48,7 @@ impl Extractor for UniformCostSearchOptimizedExtractor {
                 let (idx, _, node) = egraph.nodes.get_full(node_id).unwrap();
                 let node_idx = idx as u32;
                 if node.children.is_empty() {
-                    analysis_pending
-                        .entry(node.cost)
-                        .or_default()
-                        .push(node_idx);
+                    analysis_pending.push(node.cost, node_idx);
                 } else {
                     for child in &node.children {
                         let c = egraph.nid_to_cid(child);
@@ -100,7 +73,7 @@ impl Extractor for UniformCostSearchOptimizedExtractor {
         }
 
         let mut result = ExtractionResult::default();
-        while let Some((node_idx, resolved_cost)) = pop_min(&mut analysis_pending) {
+        while let Some((node_idx, resolved_cost)) = analysis_pending.pop_with_cost() {
             let (nid, node) = egraph.nodes.get_index(node_idx as usize).unwrap();
             let class_id = &node.eclass;
             let status = eqc_state.get_mut(class_id).unwrap();
@@ -131,10 +104,7 @@ impl Extractor for UniformCostSearchOptimizedExtractor {
                         if matches!(eqc_state[&parent_node.eclass], EqcStatus::Resolved) {
                             continue;
                         }
-                        analysis_pending
-                            .entry(pending.cost)
-                            .or_default()
-                            .push(parent);
+                        analysis_pending.push(pending.cost, parent);
                     }
                 }
             }

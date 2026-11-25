@@ -1,24 +1,9 @@
-use std::collections::BTreeMap;
 use std::mem;
 
 use rustc_hash::FxHashMap;
 
+use super::common::{BucketQueue, EqcStatus, PendingNode};
 use super::*;
-
-// State of a visited branch e-node waiting for its child e-classes to be resolved during the
-// bottom-up phase. `delay` counts remaining unresolved child occurrences (not deduplicated), and
-// `cost` accumulates `node.cost` plus resolved child costs.
-struct PendingNode {
-    delay: u32,
-    cost: Cost,
-}
-
-// Whether an e-class has been resolved yet. As an e-class' parents are only needed at the moment
-// it is assigned a minimal e-node, the two states are mutually exclusive.
-enum EqcStatus {
-    Parents(Vec<u32>),
-    Resolved,
-}
 
 // The state associated with a reached e-class over the course of the extraction.
 struct EqcState {
@@ -31,8 +16,8 @@ struct TwoPhaseAStarTopDownExtractor<'a> {
     egraph: &'a EGraph,
     eqc_state: FxHashMap<&'a ClassId, EqcState>,
     node_state: FxHashMap<u32, PendingNode>,
-    queue: BTreeMap<Cost, Vec<u32>>,
-    leaves: BTreeMap<Cost, Vec<(u32, Cost)>>,
+    queue: BucketQueue<u32>,
+    leaves: BucketQueue<(u32, Cost)>,
 }
 
 impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
@@ -41,19 +26,9 @@ impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
             egraph,
             eqc_state: Default::default(),
             node_state: Default::default(),
-            queue: BTreeMap::new(),
-            leaves: BTreeMap::new(),
+            queue: BucketQueue::new(),
+            leaves: BucketQueue::new(),
         }
-    }
-
-    fn dequeue(&mut self) -> Option<(u32, Cost)> {
-        let mut entry = self.queue.first_entry()?;
-        let td_cost = *entry.key();
-        let node = entry.get_mut().pop().unwrap();
-        if entry.get().is_empty() {
-            entry.remove();
-        }
-        Some((node, td_cost))
     }
 
     fn enqueue_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost, parents: Vec<u32>) {
@@ -69,15 +44,9 @@ impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
             let (idx, _, node) = egraph.nodes.get_full(node_id).unwrap();
             let node_idx = idx as u32;
             if node.children.is_empty() {
-                self.leaves
-                    .entry(td_cost + node.cost)
-                    .or_default()
-                    .push((node_idx, node.cost));
+                self.leaves.push(td_cost + node.cost, (node_idx, node.cost));
             } else {
-                self.queue
-                    .entry(td_cost + node.cost)
-                    .or_default()
-                    .push(node_idx);
+                self.queue.push(td_cost + node.cost, node_idx);
             }
         }
     }
@@ -111,7 +80,7 @@ impl<'a> TwoPhaseAStarTopDownExtractor<'a> {
     fn run(&mut self, target: &'a ClassId) {
         let zero = NotNan::new(0.0).unwrap();
         self.enqueue_eqc(target, zero, Vec::new());
-        while let Some((node, td_cost)) = self.dequeue() {
+        while let Some((node, td_cost)) = self.queue.pop_with_cost() {
             self.visit_children(node, td_cost);
         }
     }
@@ -121,7 +90,7 @@ struct TwoPhaseAStarBottomUpExtractor<'a> {
     egraph: &'a EGraph,
     eqc_state: FxHashMap<&'a ClassId, EqcState>,
     node_state: FxHashMap<u32, PendingNode>,
-    queue: BTreeMap<Cost, Vec<(u32, Cost)>>,
+    queue: BucketQueue<(u32, Cost)>,
     eqc_min: IndexMap<ClassId, NodeId>,
 }
 
@@ -134,15 +103,6 @@ impl<'a> TwoPhaseAStarBottomUpExtractor<'a> {
             queue: top_down.leaves,
             eqc_min: IndexMap::new(),
         }
-    }
-
-    fn dequeue(&mut self) -> Option<(u32, Cost)> {
-        let mut entry = self.queue.first_entry()?;
-        let item = entry.get_mut().pop().unwrap();
-        if entry.get().is_empty() {
-            entry.remove();
-        }
-        Some(item)
     }
 
     fn update_parents(&mut self, parents: Vec<u32>, resolved_cost: Cost) {
@@ -158,16 +118,14 @@ impl<'a> TwoPhaseAStarBottomUpExtractor<'a> {
                 }
                 let bottom_up_cost = pending.cost;
                 self.queue
-                    .entry(parent_eqc_state.td_cost + bottom_up_cost)
-                    .or_default()
-                    .push((parent, bottom_up_cost));
+                    .push(parent_eqc_state.td_cost + bottom_up_cost, (parent, bottom_up_cost));
             }
         }
     }
 
     fn run(&mut self, target: &ClassId) {
         let egraph = self.egraph;
-        while let Some((node, resolved_cost)) = self.dequeue() {
+        while let Some((node, resolved_cost)) = self.queue.pop() {
             let (nid, n) = egraph.nodes.get_index(node as usize).unwrap();
             let eqc = &n.eclass;
             let state = self.eqc_state.get_mut(eqc).expect(BAD_PATH);

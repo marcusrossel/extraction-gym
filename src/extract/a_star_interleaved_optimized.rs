@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
 use std::mem;
 
 use rustc_hash::FxHashMap;
 
+use super::common::{BucketQueue, PendingNode};
 use super::*;
 
 // An action scheduled by the queue, carrying a dense `u32` index into `egraph.nodes`.
@@ -11,14 +11,6 @@ use super::*;
 enum Action {
     Visit(u32),
     Assign(u32, Cost),
-}
-
-// State of a visited branch e-node waiting for one or more child e-classes to be resolved.
-// `delay` counts remaining unresolved child occurrences (not deduplicated), and `cost`
-// accumulates `node.cost` plus the costs of already-resolved child occurrences.
-struct PendingNode {
-    delay: u32,
-    cost: Cost,
 }
 
 // Whether an e-class has been resolved yet. As an e-class' parents are only needed at the moment
@@ -37,7 +29,7 @@ struct EqcState {
 
 struct InterleavedAStarExt<'a> {
     egraph: &'a EGraph,
-    queue: BTreeMap<Cost, Vec<Action>>,
+    queue: BucketQueue<Action>,
     node_state: FxHashMap<u32, PendingNode>,
     eqc_state: FxHashMap<&'a ClassId, EqcState>,
     eqc_min: IndexMap<ClassId, NodeId>,
@@ -47,7 +39,7 @@ impl<'a> InterleavedAStarExt<'a> {
     fn new(egraph: &'a EGraph) -> InterleavedAStarExt<'a> {
         InterleavedAStarExt {
             egraph,
-            queue: BTreeMap::new(),
+            queue: BucketQueue::new(),
             node_state: Default::default(),
             eqc_state: Default::default(),
             eqc_min: Default::default(),
@@ -55,16 +47,11 @@ impl<'a> InterleavedAStarExt<'a> {
     }
 
     fn enqueue(&mut self, action: Action, cost: Cost) {
-        self.queue.entry(cost).or_default().push(action);
+        self.queue.push(cost, action);
     }
 
     fn dequeue(&mut self) -> Option<Action> {
-        let mut entry = self.queue.first_entry()?;
-        let action = entry.get_mut().pop().unwrap();
-        if entry.get().is_empty() {
-            entry.remove();
-        }
-        Some(action)
+        self.queue.pop()
     }
 
     fn enqueue_visit_eqc(&mut self, eqc: &'a ClassId, td_cost: Cost, parents: Vec<u32>) {

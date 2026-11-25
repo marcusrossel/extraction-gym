@@ -10,6 +10,7 @@ pub mod a_star_two_phase;
 pub mod a_star_two_phase_optimized;
 pub mod bottom_up;
 pub mod bottom_up_optimized;
+pub(crate) mod common;
 pub mod faster_bottom_up;
 pub mod faster_bottom_up_optimized;
 pub mod faster_greedy_dag;
